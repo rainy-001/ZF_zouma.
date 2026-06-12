@@ -131,10 +131,10 @@ void motor_set_speed(int16_t left_speed, int16_t right_speed)
     
     // 控制左电机（使用right_pwm）
     if (right_pwm <= 0) {  // PWM为负，需要反转
-        left_dir.set_level(0);              // 设置方向为反转
+        left_dir.set_level(1);              // 设置方向为反转
         left_motor.set_duty(-right_pwm);    // PWM取绝对值输出
     } else {               // PWM为正，正转
-        left_dir.set_level(1);              // 设置方向为正转
+        left_dir.set_level(0);              // 设置方向为正转
         left_motor.set_duty(right_pwm);     // PWM直接输出
     }
     

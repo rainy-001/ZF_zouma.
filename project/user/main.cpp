@@ -34,7 +34,7 @@ int main()
     menu_system.init();
 
 
-    // while (true) {
+    while (true) {
     //     if (client.receiveLine(received, 100)) {
     //         // 去除末尾换行符
     //         received.erase(received.find_last_not_of("\r\n") + 1);
@@ -54,9 +54,12 @@ int main()
     //     }
 
     //     client.sendFormattedData("Onto_control,yaw,speed_l,speed_r,l_pwm,r_pwm:%f,%f,%f,%f,%d,%d\r\n",onto_control,ahrs.getYaw(),left_speed,right_speed,speed_to_pwm_l,speed_to_pwm_r);
-    //     menu_system.menu_system();
-    //     system_delay_ms(10);
-    // }
+        
+    
+    //菜单执行必需
+        menu_system.menu_system();
+        system_delay_ms(10);
+    }
 
-    // return 0;
+    return 0;
 }
