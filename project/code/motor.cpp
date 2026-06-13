@@ -403,10 +403,10 @@ void motor_set_speed_ladrc(float left_pwm, float right_pwm) {
     
     // 控制左电机（使用right_pwm）
     if (right_pwm_int <= 0) {
-        left_dir.set_level(0);              // 反转
+        left_dir.set_level(1);              // 反转
         left_motor.set_duty(-right_pwm_int); // PWM取绝对值
     } else {
-        left_dir.set_level(1);              // 正转
+        left_dir.set_level(0);              // 正转
         left_motor.set_duty(right_pwm_int);  // PWM直接输出
     }
     
