@@ -181,9 +181,9 @@ void pid_contol_handle()
     static float ti_tick = 0;
     //测试代码
     if(onto_pd_control_enable==1){
-        // onto_control = pid_angle.compute(onto, 0.0f); // 计算角度修正值
+        onto_control = pid_angle.compute(onto, 0.0f); // 计算角度修正值（视觉循线）
         // printf("onto : %f  ,ontoControl:  %f   ,time : %lld  \r",onto,onto_control,my_timer.elapsed_ms());
-        onto_control = pid_angle.compute(calculate_yaw_control(90.0f * (sin(ti_tick / 20.0f) >= 0 ? 1.0f : -1.0f),ahrs.getYaw(), 25),0); // 计算角度修正值
+        // onto_control = pid_angle.compute(calculate_yaw_control(90.0f * (sin(ti_tick / 20.0f) >= 0 ? 1.0f : -1.0f),ahrs.getYaw(), 25),0); // yaw测试
     }
     else{
         onto_control = 0;

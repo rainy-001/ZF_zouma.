@@ -35,12 +35,20 @@ int main()
 
 
     while (true) {
+        // ==================== 摄像头图像采集与巡线处理 ====================
+        // 阻塞等待摄像头新帧，处理图像提取赛道中线，计算方向偏差 onto
+        // onto → pid_contol_handle(5ms) → onto_control → LADRC(1ms) → 差速转向
+        if (uvc.wait_image_refresh() == 0) {
+            image_proc();
+        }
+
+        // ==================== TCP远程调参通信 ====================
         if (client.receiveLine(received, 100)) {
             // 去除末尾换行符
             received.erase(received.find_last_not_of("\r\n") + 1);
-            
+
             printf("收到: %s\n", received.c_str());
-            
+
             if (received == "WRITE") {
                 handleWriteCommand(client);
             }
@@ -54,8 +62,8 @@ int main()
         }
 
         client.sendFormattedData("Onto_control,yaw,speed_l,speed_r,l_pwm,r_pwm:%f,%f,%f,%f,%d,%d\r\n",onto_control,ahrs.getYaw(),left_speed,right_speed,speed_to_pwm_l,speed_to_pwm_r);
-        
-    
+
+
     //菜单执行必需
         menu_system.menu_system();
         system_delay_ms(10);
