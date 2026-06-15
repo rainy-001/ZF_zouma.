@@ -29,6 +29,11 @@
 #define KEY_SCAN_PERIOD          10                             // 按键扫描周期(ms)，建议10-20ms
                                                                 // 需配合消抖时间使用
 
+// 图像处理线程配置
+#define IMAGE_PROC_PERIOD        20                             // 图像处理周期(ms), 50Hz
+                                                                // 固定周期保证 onto 更新时间可预期
+                                                                // D项微分时间基准确定
+
 // PID控制线程配置
 #define PID_CONTROL_PERIOD       (5 * ENCODER_SAMPLING_PERIOD) // PID控制周期(ms)
                                                                 // 建议为编码器周期的5-10倍
@@ -121,6 +126,7 @@ extern zf_driver_pit_rt encoder_get;
 extern zf_driver_pit_rt pid_control_thread;
 extern zf_driver_pit_rt key_scan;
 extern zf_driver_pit_rt lardc_control_thread;
+extern zf_driver_pit_rt image_proc_thread;                      // 图像处理线程（20ms周期, 优先级96）
 
 /* ================================================================================================================
  *                                           线程回调函数声明
@@ -163,5 +169,18 @@ void encoder_get_count_handler();
 void pid_contol_handle();
 
 void hight_frequence_encoder_get_speed_handler();
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     图像处理线程回调函数
+// 参数说明     无
+// 返回参数     void
+// 调用周期     IMAGE_PROC_PERIOD (20ms)
+// 线程优先级   96
+// 使用示例     image_proc_thread.init_ms(IMAGE_PROC_PERIOD, image_proc_handler, 96, true);
+// 备注信息     固定周期调用 image_proc()，保证 onto 更新周期可预期(50Hz)
+//              优先级96：高于IMU(95)，低于方向PD(97)和LADRC(99)
+//-------------------------------------------------------------------------------------------------------------------
+void image_proc_handler();
+
 bool car_init();
 #endif  // __MY_GLOBAL_HPP__

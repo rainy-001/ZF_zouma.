@@ -71,6 +71,7 @@ zf_driver_pit_rt encoder_get;
 zf_driver_pit_rt pid_control_thread;
 zf_driver_pit_rt key_scan;
 zf_driver_pit_rt lardc_control_thread;
+zf_driver_pit_rt image_proc_thread;                             // 图像处理线程（20ms周期, 优先级96）
 
 
 uint8_t onto_pd_control_enable = 0;                          // 角度PD控制使能标志（0=禁用，1=启用）
@@ -112,6 +113,29 @@ void key_scan_handler() //10ms
     // {
     //     path_tracker_component.get_location(ahrs.getYaw());
     // }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     图像处理线程回调函数
+// 参数说明     无
+// 返回参数     void
+// 调用周期     IMAGE_PROC_PERIOD (20ms)
+// 线程优先级   96
+// 备注信息     固定周期执行视觉巡线管线:
+//              等帧 → clone → image_proc() → 更新 onto
+//              带防重入保护，上一帧未处理完则跳过本次
+//-------------------------------------------------------------------------------------------------------------------
+void image_proc_handler() {
+    static bool in_progress = false;
+    if (in_progress) return;
+    in_progress = true;
+
+    if (uvc.wait_image_refresh() == 0) {
+        uvc.frame_rgb = uvc.frame_mjpg.clone();
+        image_proc();
+    }
+
+    in_progress = false;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -305,5 +329,18 @@ bool car_init(){
     {
         printf("key scaning thread init successfully,period: %dms\n", KEY_SCAN_PERIOD);
     }
+
+    // 图像处理线程 (优先级96, 20ms周期, 50Hz)
+    // 插入在方向PD(97)和IMU(95)之间，保证onto固定周期更新
+    if (image_proc_thread.init_ms(IMAGE_PROC_PERIOD, image_proc_handler, 96, true) != 0)
+    {
+        printf("图像处理线程初始化失败\n");
+        return false;
+    }
+    else
+    {
+        printf("image proc thread init successfully, period: %dms\n", IMAGE_PROC_PERIOD);
+    }
+
     return true;
 }

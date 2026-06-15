@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "/home/heavencornerstone/my_car/project/code"
+    "cmake.sourceDirectory": "/home/heavencornerstone/my_car/project/code",
+    "cmake.ignoreCMakeListsMissing": true
 }

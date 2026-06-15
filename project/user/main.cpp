@@ -9,7 +9,7 @@ int main()
 
     car_init();
     TCPClient client;
-    if (!client.connect("192.168.79.38", 8086)) {
+    if (!client.connect("192.168.57.38", 8086)) {
         return -1;
     }
      onto_pd_control_enable = 1;
@@ -35,12 +35,9 @@ int main()
 
 
     while (true) {
-        // ==================== 摄像头图像采集与巡线处理 ====================
-        // 阻塞等待摄像头新帧，处理图像提取赛道中线，计算方向偏差 onto
+        // ==================== 图像处理已移至定时器线程 ====================
+        // image_proc_handler() 以 20ms(50Hz) 固定周期运行, 优先级96
         // onto → pid_contol_handle(5ms) → onto_control → LADRC(1ms) → 差速转向
-        if (uvc.wait_image_refresh() == 0) {
-            image_proc();
-        }
 
         // ==================== TCP远程调参通信 ====================
         if (client.receiveLine(received, 100)) {
@@ -66,7 +63,7 @@ int main()
 
     //菜单执行必需
         menu_system.menu_system();
-        system_delay_ms(10);
+        usleep(5000);  // 5ms, 主循环≈200Hz, 保证TCP和菜单响应
     }
 
     return 0;
