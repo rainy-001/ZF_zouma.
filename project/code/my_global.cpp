@@ -127,15 +127,13 @@ void key_scan_handler() //10ms
 // 备注信息     从 bin_img_data 读取图像处理线程产出的二值化图像，
 //              通过 ips200.show_gray_image() 显示在屏幕左上角 (0,0)-(160,120)
 //-------------------------------------------------------------------------------------------------------------------
+// [已禁用] 二值图像显示 — 避免 SPI 刷屏干扰实时控制线程
 void display_bin_handler() {
-    ips200.show_gray_image(0, 0, bin_img_data, IMG_W, IMG_H);
-
-    // 叠加帧率信息
-    static char buf[32];
-    snprintf(buf, sizeof(buf), "FPS:%.1f %.1fms", image_proc_fps, image_proc_frame_ms);
-    ips200.show_string(0, IMG_H, buf);
-
-    ips200.update();
+    // ips200.show_gray_image(0, 0, bin_img_data, IMG_W, IMG_H);
+    // static char buf[32];
+    // snprintf(buf, sizeof(buf), "FPS:%.1f %.1fms", image_proc_fps, image_proc_frame_ms);
+    // ips200.show_string(0, IMG_H, buf);
+    // ips200.update();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -242,20 +240,21 @@ void hight_frequence_encoder_get_speed_handler(){
 //              ⚠️注意：默认情况下，此线程启动后立即开始控制，若需电机停止，请设置target_speed=0
 //-------------------------------------------------------------------------------------------------------------------
 void pid_contol_handle()
-{   
-    static float ti_tick = 0;
-    //测试代码
-    if(onto_pd_control_enable==1){
-        onto_control = pid_angle.compute(onto, 0.0f); // 计算角度修正值（视觉循线）
-        // printf("onto : %f  ,ontoControl:  %f   ,time : %lld  \r",onto,onto_control,my_timer.elapsed_ms());
-        // onto_control = pid_angle.compute(calculate_yaw_control(90.0f * (sin(ti_tick / 20.0f) >= 0 ? 1.0f : -1.0f),ahrs.getYaw(), 25),0); // yaw测试
-    }
-    else{
+{
+    // 方向PD：视觉偏差 → 转向修正量
+    if (onto_pd_control_enable == 1) {
+        onto_control = pid_angle.compute(onto, 0.0f);
+    } else {
         onto_control = 0;
     }
-    // calculate_yaw_control
-    // onto_control = pid_angle.compute(onto, 0.0f); // 计算角度修正值
-    // printf("onto : %f  ,ontoControl:  %f   ,time : %lld  \r",onto,onto_control,my_timer.elapsed_ms());
+
+    // PID 模式：速度闭环 + 差速转向
+    if (control_model == 0) {
+        target_speed_l = target_speed_r = cruising_speed;
+        speed_to_pwm_l = (int16_t)pid_l.control(target_speed_l + onto_control, left_speed);
+        speed_to_pwm_r = (int16_t)pid_r.control(target_speed_r - onto_control, right_speed);
+        motor_set_speed(speed_to_pwm_l, speed_to_pwm_r);
+    }
 }
 
 bool car_init(){
@@ -383,17 +382,16 @@ bool car_init(){
         printf("image proc thread init successfully, period: %dms\n", IMAGE_PROC_PERIOD);
     }
 
-    // 二值图像显示线程 (优先级94, 20ms周期, 50Hz)
-    // 最低优先级，与图像处理同频，高帧率实时显示到IPS200屏幕
-    if (display_bin_thread.init_ms(DISPLAY_BIN_PERIOD, display_bin_handler, 94, true) != 0)
-    {
-        printf("二值图像显示线程初始化失败\n");
-        return false;
-    }
-    else
-    {
-        printf("binary display thread init successfully, period: %dms\n", DISPLAY_BIN_PERIOD);
-    }
+    // [已禁用] 二值图像显示线程 — 避免 SPI 刷屏干扰实时控制
+    // if (display_bin_thread.init_ms(DISPLAY_BIN_PERIOD, display_bin_handler, 94, true) != 0)
+    // {
+    //     printf("二值图像显示线程初始化失败\n");
+    //     return false;
+    // }
+    // else
+    // {
+    //     printf("binary display thread init successfully, period: %dms\n", DISPLAY_BIN_PERIOD);
+    // }
 
     return true;
 }

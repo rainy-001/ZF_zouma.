@@ -69,7 +69,7 @@ bool motor_init()
 {
     // 设置电机方向为默认状态（根据硬件调整）
     right_dir.set_level(1);      // 右电机方向初始化
-    left_dir.set_level(1);       // 左电机方向初始化
+    left_dir.set_level(0);       // 左电机方向初始化
     
     // 设置PWM占空比为0，确保电机停止
     right_motor.set_duty(0);     // 右电机PWM清零

@@ -340,6 +340,9 @@ bool handleWriteCommand(TCPClient& client) {
         client.sendFormattedData("kp2:%.6f\n", onto_kp2);
         client.sendFormattedData("kd:%.6f\n", onto_kd);
         client.sendFormattedData("limit:%.6f\n", onto_limit);
+        client.sendFormattedData("pid_kp:%.6f\n", pid_r_kp);
+        client.sendFormattedData("pid_ki:%.6f\n", pid_r_ki);
+        client.sendFormattedData("pid_kd:%.6f\n", pid_r_kd);
         printf("已发送当前参数\n");
         return true;
     }
@@ -413,16 +416,22 @@ bool parseAndUpdateParameter(const std::string& line) {
     else if (key == "pid_kp") {
         pid_r_kp = value;
         pid_l_kp = value;
+        pid_r.set_index(pid_r_kp, pid_r_kd, pid_r_ki, pid_r_ts);
+        pid_l.set_index(pid_l_kp, pid_l_kd, pid_l_ki, pid_l_ts);
         printf("更新 PID Kp: %.6f\n", value);
     }
     else if (key == "pid_ki") {
         pid_r_ki = value;
         pid_l_ki = value;
+        pid_r.set_index(pid_r_kp, pid_r_kd, pid_r_ki, pid_r_ts);
+        pid_l.set_index(pid_l_kp, pid_l_kd, pid_l_ki, pid_l_ts);
         printf("更新 PID Ki: %.6f\n", value);
     }
     else if (key == "pid_kd") {
         pid_r_kd = value;
         pid_l_kd = value;
+        pid_r.set_index(pid_r_kp, pid_r_kd, pid_r_ki, pid_r_ts);
+        pid_l.set_index(pid_l_kp, pid_l_kd, pid_l_ki, pid_l_ts);
         printf("更新 PID Kd: %.6f\n", value);
     }
     else {
