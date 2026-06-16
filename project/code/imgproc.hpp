@@ -97,6 +97,7 @@ extern cv::Mat frame_color;         // 用于处理的图像帧
 extern cv::Mat frame_gray;          // 灰度图像帧
 extern cv::Mat frame_bin;           // 二值图像帧
 extern uint8_t* img_gray;           // 灰度图像指针
+extern uint8_t bin_img_data[IMG_H * IMG_W];  // 二值化图像数据(0/255)，供显示线程读取
 
 extern uint8 all_block_size,start_thre;    //调整参数
 extern float avg_angle;

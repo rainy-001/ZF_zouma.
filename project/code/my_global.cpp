@@ -72,6 +72,7 @@ zf_driver_pit_rt pid_control_thread;
 zf_driver_pit_rt key_scan;
 zf_driver_pit_rt lardc_control_thread;
 zf_driver_pit_rt image_proc_thread;                             // 图像处理线程（20ms周期, 优先级96）
+zf_driver_pit_rt display_bin_thread;                             // 二值图像显示线程（20ms/50Hz, 优先级94, 最低）
 
 
 uint8_t onto_pd_control_enable = 0;                          // 角度PD控制使能标志（0=禁用，1=启用）
@@ -113,6 +114,20 @@ void key_scan_handler() //10ms
     // {
     //     path_tracker_component.get_location(ahrs.getYaw());
     // }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     二值图像显示线程回调函数
+// 参数说明     无
+// 返回参数     void
+// 调用周期     DISPLAY_BIN_PERIOD (20ms, 50Hz)
+// 线程优先级   94（最低优先级）
+// 备注信息     从 bin_img_data 读取图像处理线程产出的二值化图像，
+//              通过 ips200.show_gray_image() 显示在屏幕左上角 (0,0)-(160,120)
+//-------------------------------------------------------------------------------------------------------------------
+void display_bin_handler() {
+    ips200.show_gray_image(0, 0, bin_img_data, IMG_W, IMG_H);
+    ips200.update();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -340,6 +355,18 @@ bool car_init(){
     else
     {
         printf("image proc thread init successfully, period: %dms\n", IMAGE_PROC_PERIOD);
+    }
+
+    // 二值图像显示线程 (优先级94, 20ms周期, 50Hz)
+    // 最低优先级，与图像处理同频，高帧率实时显示到IPS200屏幕
+    if (display_bin_thread.init_ms(DISPLAY_BIN_PERIOD, display_bin_handler, 94, true) != 0)
+    {
+        printf("二值图像显示线程初始化失败\n");
+        return false;
+    }
+    else
+    {
+        printf("binary display thread init successfully, period: %dms\n", DISPLAY_BIN_PERIOD);
     }
 
     return true;

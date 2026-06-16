@@ -13,7 +13,8 @@ Mat frame_gray;                 // 灰度图像帧
 Mat frame_bin;                  // 二值图像帧
 
 uint8_t* img_gray = nullptr;              // 灰度图像指针
-AimPoint_TypeDef aim_point; 
+uint8_t bin_img_data[IMG_H * IMG_W];     // 二值化图像数据(0/255)，供显示线程读取
+AimPoint_TypeDef aim_point;
 
 
 /*--图片去畸--*/
@@ -994,6 +995,12 @@ void image_proc() {
     img_gray = reinterpret_cast<uint8_t*>(frame_gray_small.ptr(0));
 
     start_thre = get_otsu_thres(img_gray, 0, 160, TRACK_HEIGHT_MAX, 120);
+
+    // 生成二值化图像供显示线程使用
+    for (int i = 0; i < IMG_W * IMG_H; i++) {
+        bin_img_data[i] = (img_gray[i] > start_thre) ? 255 : 0;
+    }
+
     line_process(120, 120 / 2);
 
     element_status();

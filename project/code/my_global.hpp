@@ -34,6 +34,10 @@
                                                                 // 固定周期保证 onto 更新时间可预期
                                                                 // D项微分时间基准确定
 
+// 二值图像显示线程配置
+#define DISPLAY_BIN_PERIOD       20                             // 二值图像显示周期(ms), 50Hz
+                                                                // 与图像处理同频，高帧率实时显示
+
 // PID控制线程配置
 #define PID_CONTROL_PERIOD       (5 * ENCODER_SAMPLING_PERIOD) // PID控制周期(ms)
                                                                 // 建议为编码器周期的5-10倍
@@ -127,6 +131,7 @@ extern zf_driver_pit_rt pid_control_thread;
 extern zf_driver_pit_rt key_scan;
 extern zf_driver_pit_rt lardc_control_thread;
 extern zf_driver_pit_rt image_proc_thread;                      // 图像处理线程（20ms周期, 优先级96）
+extern zf_driver_pit_rt display_bin_thread;                      // 二值图像显示线程（20ms/50Hz, 优先级94, 最低）
 
 /* ================================================================================================================
  *                                           线程回调函数声明
@@ -181,6 +186,17 @@ void hight_frequence_encoder_get_speed_handler();
 //              优先级96：高于IMU(95)，低于方向PD(97)和LADRC(99)
 //-------------------------------------------------------------------------------------------------------------------
 void image_proc_handler();
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     二值图像显示线程回调函数
+// 参数说明     无
+// 返回参数     void
+// 调用周期     DISPLAY_BIN_PERIOD (20ms, 50Hz)
+// 线程优先级   94（最低优先级）
+// 使用示例     display_bin_thread.init_ms(DISPLAY_BIN_PERIOD, display_bin_handler, 94, true);
+// 备注信息     从 bin_img_data 读取图像处理线程产出的二值化图像，显示在 IPS200 屏幕
+//-------------------------------------------------------------------------------------------------------------------
+void display_bin_handler();
 
 bool car_init();
 #endif  // __MY_GLOBAL_HPP__
