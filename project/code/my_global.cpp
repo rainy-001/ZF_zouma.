@@ -35,6 +35,8 @@ uint16_t* rgb_img_ptr = nullptr;                                // RGB图像数�
 // 时间戳对象（用于性能测试）
 TimerClockGetTime my_timer;                                     // 通用计时器（纳秒级精度）
 TimerClockGetTime camera_timer;                                 // 摄像头帧率计时器
+float image_proc_fps      = 0.0f;                               // 图像处理实际帧率
+float image_proc_frame_ms = 0.0f;                               // 图像处理单帧耗时(ms)
 
 /* ================================================================================================================
  *                                           速度控制系统变量定义
@@ -127,6 +129,12 @@ void key_scan_handler() //10ms
 //-------------------------------------------------------------------------------------------------------------------
 void display_bin_handler() {
     ips200.show_gray_image(0, 0, bin_img_data, IMG_W, IMG_H);
+
+    // 叠加帧率信息
+    static char buf[32];
+    snprintf(buf, sizeof(buf), "FPS:%.1f %.1fms", image_proc_fps, image_proc_frame_ms);
+    ips200.show_string(0, IMG_H, buf);
+
     ips200.update();
 }
 
@@ -145,9 +153,27 @@ void image_proc_handler() {
     if (in_progress) return;
     in_progress = true;
 
+    // 首帧启动 camera_timer
+    static bool timer_started = false;
+    static int  frame_count   = 0;
+    if (!timer_started) { camera_timer.start(); timer_started = true; }
+
     if (uvc.wait_image_refresh() == 0) {
         uvc.frame_rgb = uvc.frame_mjpg.clone();
         image_proc();
+    }
+
+    // 每 10 帧刷新一次帧率统计
+    frame_count++;
+    if (frame_count >= 10) {
+        camera_timer.stop();
+        long long elapsed = camera_timer.elapsed_ms();
+        if (elapsed > 0) {
+            image_proc_fps      = frame_count * 1000.0f / elapsed;
+            image_proc_frame_ms = (float)elapsed / frame_count;
+        }
+        frame_count = 0;
+        camera_timer.start();
     }
 
     in_progress = false;

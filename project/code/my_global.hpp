@@ -30,12 +30,12 @@
                                                                 // 需配合消抖时间使用
 
 // 图像处理线程配置
-#define IMAGE_PROC_PERIOD        20                             // 图像处理周期(ms), 50Hz
+#define IMAGE_PROC_PERIOD        15                             // 图像处理周期(ms), 50Hz
                                                                 // 固定周期保证 onto 更新时间可预期
                                                                 // D项微分时间基准确定
 
 // 二值图像显示线程配置
-#define DISPLAY_BIN_PERIOD       20                             // 二值图像显示周期(ms), 50Hz
+#define DISPLAY_BIN_PERIOD       15                            // 二值图像显示周期(ms), 50Hz
                                                                 // 与图像处理同频，高帧率实时显示
 
 // PID控制线程配置
@@ -83,6 +83,8 @@ extern uint16_t* rgb_img_ptr;                                     // RGB图像�
 // 时间戳对象（用于性能测试和调试）
 extern TimerClockGetTime my_timer;                              // 通用计时器
 extern TimerClockGetTime camera_timer;                          // 摄像头帧率计时器
+extern float image_proc_fps;                                    // 图像处理实际帧率
+extern float image_proc_frame_ms;                               // 图像处理单帧耗时(ms)
 
 /* ================================================================================================================
  *                                           速度控制系统变量（⚠️核心控制接口）
