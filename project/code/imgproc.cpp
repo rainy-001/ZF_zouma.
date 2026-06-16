@@ -1064,7 +1064,7 @@ void image_proc() {
     // printf("onto:   %f     ,middle_line_length: %d    \r",onto,middle_line_length);
 
     // 调试要看状态机请解注释这行
-    // printf("state:%d ,element_state:%d ,left:%f  ,right:%f  \r   ",tracking_decision_machine.state,cricle_decision_machine.state,nms_Lline, nms_Rline);
+    printf("state:%d ,element_state:%d ,left:%f  ,right:%f  \r   ",tracking_decision_machine.state,cricle_decision_machine.state,nms_Lline, nms_Rline);
 
 }
 //状态机初始化
