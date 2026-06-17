@@ -194,7 +194,7 @@ void encoder_get_count_handler()
     // my_timer.start();                                        // 重新启动计时  
     // -------------------- 核心功能：获取编码器速度 --------------------
     // 读取编码器计数值并映射为速度，同时清零编码器计数器
-    get_and_remap_speed(&right_speed, &left_speed, ENCODER_SAMPLING_PERIOD);
+    get_and_remap_speed(&left_speed, &right_speed, ENCODER_SAMPLING_PERIOD);
     // 开启路径记录时进行里程计更新
     if(path_tracker_component.is_recording){
         path_tracker_component.right_tyre.update(((int16_t)right_speed));
