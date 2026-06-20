@@ -2,6 +2,7 @@ whether_use_lardc: false
 lardc_r: h=0.001f,r=13.3f,wc=29f,w0=190f,b0=0.83f,pwm_min=-1000f,pwm_max=1000f;
 lardc_l: h=0.001f,r=13.3f,wc=29f,w0=190f,b0=0.83f,pwm_min=-1000f,pwm_max=1000f;
 whether_use_pid: true
-pid_r: p=2f,t=0.01f,i_gain=0.3f,d=0.3f,error_filter=0.02f,output_max=120f,output_min=-120f,integral_max=60f,integral_min=-60f;
-pid_l: p=2f,t=0.01f,i_gain=0.3f,d=0.3f,error_filter=0.02f,output_max=120f,output_min=-120f,integral_max=60f,integral_min=-60f;
-onto_pd: kp=0f,kp2=0.1f,kd=2.5f,limit=30f;
+pid_r: p=2.5f,t=0.01f,i_gain=0.3f,d=0.3f,error_filter=0.02f,output_max=120f,output_min=-120f,integral_max=60f,integral_min=-60f;
+pid_l: p=2.5f,t=0.01f,i_gain=0.3f,d=0.3f,error_filter=0.02f,output_max=120f,output_min=-120f,integral_max=60f,integral_min=-60f;
+onto_pd: kp=0.1f,kp2=0.1f,kd=2.5f,limit=3f;
+

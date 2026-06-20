@@ -9,6 +9,7 @@
 ********************************************************************************************************************/
 
 #include "my_global.hpp"
+#include "niu_vision.hpp"
 
 /* ================================================================================================================
  *                                           人机交互设备对象定义
@@ -129,11 +130,42 @@ void key_scan_handler() //10ms
 //-------------------------------------------------------------------------------------------------------------------
 // [已禁用] 二值图像显示 — 避免 SPI 刷屏干扰实时控制线程
 void display_bin_handler() {
-    // ips200.show_gray_image(0, 0, bin_img_data, IMG_W, IMG_H);
-    // static char buf[32];
-    // snprintf(buf, sizeof(buf), "FPS:%.1f %.1fms", image_proc_fps, image_proc_frame_ms);
-    // ips200.show_string(0, IMG_H, buf);
-    // ips200.update();
+    // IPS200 240×320, image_use / show = 188×120
+
+    // 1. 上方：变换前原始二值图 (0,0)–(188,120)
+    ips200.show_gray_image(0, 0, image_use[0], MT9V03X_W, MT9V03X_H);
+
+    // 2. 下方：鸟瞰变换后二值图 (0,120)–(188,240)
+    ips200.show_gray_image(0, MT9V03X_H, show[0], MT9V03X_W, MT9V03X_H);
+
+    // 3. 下方叠加左边线（蓝色，鸟瞰坐标，y 偏移 MT9V03X_H）
+    for (int i = 1; i < Lout_count && i < 100; i++) {
+        ips200.draw_line((uint16)Luse_edge[i-1][0], (uint16)(MT9V03X_H + Luse_edge[i-1][1]),
+                         (uint16)Luse_edge[i][0],   (uint16)(MT9V03X_H + Luse_edge[i][1]),   0x001F);
+    }
+
+    // 4. 下方叠加右边线（红色）
+    for (int i = 1; i < Rout_count && i < 100; i++) {
+        ips200.draw_line((uint16)Ruse_edge[i-1][0], (uint16)(MT9V03X_H + Ruse_edge[i-1][1]),
+                         (uint16)Ruse_edge[i][0],   (uint16)(MT9V03X_H + Ruse_edge[i][1]),   0xF800);
+    }
+
+    // 5. 下方叠加中线（绿色）
+    if (Lmidnum2 > 1) {
+        for (int i = 1; i < Lmidnum2 && i < 50; i++) {
+            ips200.draw_line((uint16)Lout_MID[i-1][0], (uint16)(MT9V03X_H + Lout_MID[i-1][1]),
+                             (uint16)Lout_MID[i][0],   (uint16)(MT9V03X_H + Lout_MID[i][1]),   0x07E0);
+        }
+    }
+
+    // 6. 状态信息
+    static char buf[64];
+    snprintf(buf, sizeof(buf), "FPS:%.1f err:%.1f dir:%d zL:%d zR:%d",
+             image_proc_fps, error, xunxian_dir, ifzhi_L, ifzhi_R);
+    ips200.show_string(0, MT9V03X_H * 2, buf);
+
+    // 7. 刷新
+    ips200.update();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -157,8 +189,13 @@ void image_proc_handler() {
     if (!timer_started) { camera_timer.start(); timer_started = true; }
 
     if (uvc.wait_image_refresh() == 0) {
-        uvc.frame_rgb = uvc.frame_mjpg.clone();
-        image_proc();
+        // 获取灰度图
+        uint8_t *gray = uvc.get_gray_image_ptr();
+        if (gray) {
+            // 牛爷爷全管线：Otsu → 最长白列 → 八邻域爬线 → 逆透视 → 滤波
+            //               → 重采样 → 拐点+直道 → 中线 → 纯跟踪 → error
+            niu_vision_pipeline(gray, UVC_WIDTH, UVC_HEIGHT);
+        }
     }
 
     // 每 10 帧刷新一次帧率统计
@@ -188,13 +225,12 @@ void image_proc_handler() {
 //-------------------------------------------------------------------------------------------------------------------
 void encoder_get_count_handler()
 {
-    // -------------------- 周期测试 --------------------
-    // my_timer.stop();                                         // 停止计时
-    // printf("耗时: %lld us\n", my_timer.elapsed_us());        // 打印耗时
-    // my_timer.start();                                        // 重新启动计时  
     // -------------------- 核心功能：获取编码器速度 --------------------
-    // 读取编码器计数值并映射为速度，同时清零编码器计数器
     get_and_remap_speed(&left_speed, &right_speed, ENCODER_SAMPLING_PERIOD);
+
+    // 同步到牛爷爷速度变量（供 madasudu() 使用）
+    speedl = left_speed;
+    speedr = right_speed;
     // 开启路径记录时进行里程计更新
     if(path_tracker_component.is_recording){
         path_tracker_component.right_tyre.update(((int16_t)right_speed));
@@ -241,20 +277,35 @@ void hight_frequence_encoder_get_speed_handler(){
 //-------------------------------------------------------------------------------------------------------------------
 void pid_contol_handle()
 {
-    // 方向PD：视觉偏差 → 转向修正量
+    // 牛爷爷控制方案：纯跟踪 → error, PID 速度环 → madasudu
     if (onto_pd_control_enable == 1) {
-        onto_control = pid_angle.compute(onto, 0.0f);
+        // 设置期望速度基准
+        speedtobel = cruising_speed;
+        speedtober = cruising_speed;
+
+        // 调用牛爷爷纯跟踪：error 已在 niu_vision_pipeline 中更新
+        // duty 已由 get_error() 计算好
+
+        // 桥接：牛爷爷 duty → onto_control（差速转向）
+        // duty 范围 ±70，映射到差速量
+        onto_control = duty;
+
+        // 牛爷爷速度 PID → pwml/pwmr
+        madasudu();
     } else {
         onto_control = 0;
     }
 
-    // PID 模式：速度闭环 + 差速转向
-    if (control_model == 0) {
-        target_speed_l = target_speed_r = cruising_speed;
-        speed_to_pwm_l = (int16_t)pid_l.control(target_speed_l + onto_control, left_speed);
-        speed_to_pwm_r = (int16_t)pid_r.control(target_speed_r - onto_control, right_speed);
-        motor_set_speed(speed_to_pwm_l, speed_to_pwm_r);
+    // 使用牛爷爷 madasudu 产出的 PWM（或 fallback 到原有 PID）
+    if (onto_pd_control_enable == 1) {
+        speed_to_pwm_l = (int16_t)pwml;
+        speed_to_pwm_r = (int16_t)pwmr;
+    } else {
+        speed_to_pwm_l = 0;
+        speed_to_pwm_r = 0;
     }
+
+    motor_set_speed(speed_to_pwm_l, speed_to_pwm_r);
 }
 
 bool car_init(){
@@ -383,15 +434,15 @@ bool car_init(){
     }
 
     // [已禁用] 二值图像显示线程 — 避免 SPI 刷屏干扰实时控制
-    // if (display_bin_thread.init_ms(DISPLAY_BIN_PERIOD, display_bin_handler, 94, true) != 0)
-    // {
-    //     printf("二值图像显示线程初始化失败\n");
-    //     return false;
-    // }
-    // else
-    // {
-    //     printf("binary display thread init successfully, period: %dms\n", DISPLAY_BIN_PERIOD);
-    // }
+    if (display_bin_thread.init_ms(DISPLAY_BIN_PERIOD, display_bin_handler, 94, true) != 0)
+    {
+        printf("二值图像显示线程初始化失败\n");
+        return false;
+    }
+    else
+    {
+        printf("binary display thread init successfully, period: %dms\n", DISPLAY_BIN_PERIOD);
+    }
 
     return true;
 }

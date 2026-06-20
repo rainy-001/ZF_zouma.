@@ -715,8 +715,22 @@ void MyMenu::camera_test(uint8 cl_action)
     disp->print(0, 0, RGB565_WHITE, 20.0f, "=== Camera Test ===");
 
     if (refresh_ret == 0 && rgb_img_ptr != nullptr) {
-        // RGB565 图像：逐行 memcpy，远快于 gray→RGB565 逐像素转换
-        disp->show_rgb_image(0, 24, rgb_img_ptr, UVC_WIDTH, UVC_HEIGHT);
+        // 摄像头 320x240 → 缩放到 240x180 适配 IPS200 屏幕 (240x320)
+        // 最近邻插值，保持 4:3 宽高比
+        static uint16 scaled_buf[240 * 180];
+        constexpr uint16 disp_w = 240;
+        constexpr uint16 disp_h = 180;
+
+        for (uint16 dst_row = 0; dst_row < disp_h; dst_row++) {
+            uint16 src_row = (uint32)dst_row * UVC_HEIGHT / disp_h;
+            const uint16 *src_line = rgb_img_ptr + src_row * UVC_WIDTH;
+            uint16 *dst_line = scaled_buf + dst_row * disp_w;
+            for (uint16 dst_col = 0; dst_col < disp_w; dst_col++) {
+                uint16 src_col = (uint32)dst_col * UVC_WIDTH / disp_w;
+                dst_line[dst_col] = src_line[src_col];
+            }
+        }
+        disp->show_rgb_image(0, 24, scaled_buf, disp_w, disp_h);
     } else {
         disp->print(0, 100, "No camera frame...");
     }

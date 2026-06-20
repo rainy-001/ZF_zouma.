@@ -89,6 +89,7 @@ typedef struct {
 /*------------------------其他宏定义------------------------*/
 #define IMG_AT(img, x, y)   (img[(y) * (IMG_W) + (x)])     // 用于访问图像数据
 extern cv::Mat ud_map_cv;
+extern cv::Mat M_Reverse;           // 逆透视矩阵
 /*去畸变矩阵*/
 extern float undistort_map_x[IMG_H][IMG_W];
 extern float undistort_map_y[IMG_H][IMG_W];
