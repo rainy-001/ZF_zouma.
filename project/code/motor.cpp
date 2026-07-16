@@ -68,8 +68,8 @@ zf_driver_gpio left_dir(ZF_GPIO_MOTOR_2);      // 左电机方向（GPIO76）
 bool motor_init()
 {
     // 设置电机方向为默认状态（根据硬件调整）
-    right_dir.set_level(1);      // 右电机方向初始化
-    left_dir.set_level(0);       // 左电机方向初始化
+    right_dir.set_level(0);      // 右电机方向初始化
+    left_dir.set_level(1);       // 左电机方向初始化
     
     // 设置PWM占空比为0，确保电机停止
     right_motor.set_duty(0);     // 右电机PWM清零
@@ -131,19 +131,19 @@ void motor_set_speed(int16_t left_speed, int16_t right_speed)
     
     // 控制左电机（使用right_pwm）
     if (right_pwm <= 0) {  // PWM为负，需要反转
-        left_dir.set_level(1);              // 设置方向为反转
+        left_dir.set_level(0);              // 设置方向为反转
         left_motor.set_duty(-right_pwm);    // PWM取绝对值输出
     } else {               // PWM为正，正转
-        left_dir.set_level(0);              // 设置方向为正转
+        left_dir.set_level(1);              // 设置方向为正转
         left_motor.set_duty(right_pwm);     // PWM直接输出
     }
     
     // 控制右电机（使用left_pwm）
     if (left_pwm <= 0) {   // PWM为负，需要反转
-        right_dir.set_level(0);             // 设置方向为反转
+        right_dir.set_level(1);             // 设置方向为反转
         right_motor.set_duty(-left_pwm);    // PWM取绝对值输出
     } else {               // PWM为正，正转
-        right_dir.set_level(1);             // 设置方向为正转
+        right_dir.set_level(0);             // 设置方向为正转
         right_motor.set_duty(left_pwm);     // PWM直接输出
     }
 }
@@ -403,19 +403,19 @@ void motor_set_speed_ladrc(float left_pwm, float right_pwm) {
     
     // 控制左电机（使用right_pwm）
     if (right_pwm_int <= 0) {
-        left_dir.set_level(1);              // 反转
+        left_dir.set_level(0);              // 反转
         left_motor.set_duty(-right_pwm_int); // PWM取绝对值
     } else {
-        left_dir.set_level(0);              // 正转
+        left_dir.set_level(1);              // 正转
         left_motor.set_duty(right_pwm_int);  // PWM直接输出
     }
     
     // 控制右电机（使用left_pwm）
     if (left_pwm_int <= 0) {
-        right_dir.set_level(0);             // 反转
+        right_dir.set_level(1);             // 反转
         right_motor.set_duty(-left_pwm_int); // PWM取绝对值
     } else {
-        right_dir.set_level(1);             // 正转
+        right_dir.set_level(0);             // 正转
         right_motor.set_duty(left_pwm_int);  // PWM直接输出
     }
 }
