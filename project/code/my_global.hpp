@@ -102,7 +102,7 @@ extern float target_speed_l;                                    // 左轮目标�
                                                                 // 💡使用说明：直接修改这两个变量即可控制车速
                                                                 // 数值范围：-120 ~ +120（负值反转）
                                                                 // 示例：target_speed_r = 50; // 右轮前进速度50
-#define CRUISING_SPEED       15.0                                // 巡航速度常量(m/s)，低速测试用2.0，正常速度6.0
+#define CRUISING_SPEED       20.0                                // 巡航速度常量(m/s)，低速测试用2.0，正常速度6.0
 extern float cruising_speed;
 extern float onto_control;
 
