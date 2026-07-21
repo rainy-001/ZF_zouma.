@@ -133,7 +133,7 @@ void* img_consume(void* args);
 uint8 get_otsu_thres(uint8 *img, int x0, int x1, int y0, int y1);
 void save_per_map(void);
 
-void point_per(const cv::Mat& M, float x, float y, int& x_out, int& y_out);
+void point_per(const float M[3][3], float x, float y, int& x_out, int& y_out);
 
 void line_process(uint8_t height_start, uint8_t height_min);
 void search_Lline(int height_start, int height_min);

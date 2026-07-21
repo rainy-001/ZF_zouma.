@@ -1,4 +1,5 @@
 #include "imgproc.hpp"
+#include "my_image_transmitter.hpp"
 using namespace cv;
 
 /*决策变量******************/
@@ -30,8 +31,6 @@ uint8_t all_block_size = 7;
 uint8_t adapt_clip = 7;         // 自适应迷宫巡线偏差
 uint8_t start_thre = 130;
 float avg_angle;
-float map_x[IMG_H][IMG_W];      // 原图点(x,y)透视后x坐标
-float map_y[IMG_H][IMG_W];      // 原图点(x,y)透视后y坐标
 // 方向数组
 int dir_front[4][2]      = {{0,  -1},{1, 0},{0, 1},{-1, 0}};
 int dir_frontleft[4][2]  = {{-1, -1},{1,-1},{1, 1},{-1, 1}};
@@ -55,15 +54,19 @@ float dangle_Lline[POINTS_MAX_LEN], dangle_Rline[POINTS_MAX_LEN];            // 
 float nms_Lline,nms_Rline;          // 角点值
 int nms_Lline_idx,nms_Rline_idx;    // 索引
 
-cv::Mat M = (cv::Mat_<float>(3, 3) <<
--1.7987879419009005,-4.6836929815029515,224.950105042017,
--0.02597752463054235,-8.582940180382508,304.59513546798064,
--0.0003848522167487723,-0.05828171785955768,1.0);
+/* 牛爷爷透视矩阵 - 正向变换（图像坐标 → 鸟瞰坐标） */
+const float M[3][3] = {
+    { 8.6370f, -0.1047f, -243.9481f},
+    { 4.6076f,  2.2174f, -268.2624f},
+    { 0.0484f, -0.0004f,   -0.3786f}
+};
 
-cv::Mat M_Reverse = (cv::Mat_<float>(3, 3) <<
--0.5567704942449283,0.5116792735001106,-30.609436463231717,
-0.005540545406144685,0.10396670497412587,-32.91409885685576,
-0.00010863814521852267,0.006256279068760795,-0.9300703326531625);
+/* 牛爷爷透视矩阵 - 逆向变换（鸟瞰坐标 → 图像坐标，备用） */
+const float M_inv[3][3] = {
+    {-0.0480f,  0.0028f, 28.9807f},
+    {-0.5721f,  0.4345f, 60.7599f},
+    {-0.0056f, -0.0001f,  1.0000f}
+};
 /*边线处理变量**************/
 
 //巡线决策机
@@ -200,14 +203,14 @@ void save_per_map(void) {
         return;
     }
     
-    // 计算透视映射
+    float map_x[IMG_H][IMG_W];
+    float map_y[IMG_H][IMG_W];
+
     for (int y = 0; y < IMG_H; y++) {
         for (int x = 0; x < IMG_W; x++) {   
-            float U = M.at<float>(0, 0) * x + M.at<float>(0, 1) * y + M.at<float>(0, 2);
-            float V = M.at<float>(1, 0) * x + M.at<float>(1, 1) * y + M.at<float>(1, 2);
-            float W = M.at<float>(2, 0) * x + M.at<float>(2, 1) * y + M.at<float>(2, 2);
-            
-            // 避免除以零
+            float U = M[0][0] * x + M[0][1] * y + M[0][2];
+            float V = M[1][0] * x + M[1][1] * y + M[1][2];
+            float W = M[2][0] * x + M[2][1] * y + M[2][2];
             if (W != 0.0f) {
                 map_x[y][x] = U / W;
                 map_y[y][x] = V / W;
@@ -218,10 +221,8 @@ void save_per_map(void) {
         }
     }
     
-    // 设置四位小数精度
     fout << std::fixed << std::setprecision(4);
     
-    // 写入map_x
     for (int y = 0; y < IMG_H; y++) {
         for (int x = 0; x < IMG_W; x++) {
             fout << map_x[y][x];
@@ -230,10 +231,8 @@ void save_per_map(void) {
         fout << std::endl;
     }
     
-    // 写入空行分隔
     fout << std::endl;
     
-    // 写入map_y
     for (int y = 0; y < IMG_H; y++) {
         for (int x = 0; x < IMG_W; x++) {
             fout << map_y[y][x];
@@ -295,26 +294,33 @@ void load_undistort_map(void){
 /**
  * @brief 对点应用透视矩阵
  */
-void point_per(const cv::Mat& M, float x, float y, int& x_out, int& y_out) {
-    const float M11 = M.at<float>(0, 0), M12 = M.at<float>(0, 1), M13 = M.at<float>(0, 2); 
-    const float M21 = M.at<float>(1, 0), M22 = M.at<float>(1, 1), M23 = M.at<float>(1, 2); 
-    const float M31 = M.at<float>(2, 0), M32 = M.at<float>(2, 1), M33 = M.at<float>(2, 2);
-
-    float X = M11 * x + M12 * y + M13 * 1.0f;
-    float Y = M21 * x + M22 * y + M23 * 1.0f;
-    float W = M31 * x + M32 * y + M33 * 1.0f;
-    x_out = (int)(X/W+0.5);
-    y_out = (int)(Y/W+0.5);
+void point_per(const float M[3][3], float x, float y, int& x_out, int& y_out) {
+    float X = M[0][0] * x + M[0][1] * y + M[0][2];
+    float Y = M[1][0] * x + M[1][1] * y + M[1][2];
+    float W = M[2][0] * x + M[2][1] * y + M[2][2];
+    if (W != 0.0f) {
+        x_out = (int)(X / W + 0.5f);
+        y_out = (int)(Y / W + 0.5f);
+    } else {
+        x_out = 0;
+        y_out = 0;
+    }
 }
 /*---------------------------边线处理-----------------------------*/
 
-// 透视变换
+// 透视变换 — 使用牛爷爷矩阵逐点计算
 void perspective_transform_points(int pts_in[][2],int num,float pts_out[][2]){
     for (int i=0;i<num;i++){
-        int x = pts_in[i][0];
-        int y = pts_in[i][1];
-        pts_out[i][0] = map_x[y][x];
-        pts_out[i][1] = map_y[y][x];
+        float x = (float)pts_in[i][0];
+        float y = (float)pts_in[i][1];
+        float W = M[2][0] * x + M[2][1] * y + M[2][2];
+        if (W != 0.0f) {
+            pts_out[i][0] = (M[0][0] * x + M[0][1] * y + M[0][2]) / W;
+            pts_out[i][1] = (M[1][0] * x + M[1][1] * y + M[1][2]) / W;
+        } else {
+            pts_out[i][0] = 0.0f;
+            pts_out[i][1] = 0.0f;
+        }
     }
 }
 
@@ -1011,6 +1017,13 @@ void image_proc() {
 
     max_angle = std::max(nms_Lline, nms_Rline);
     onto = calculate_weighted_offset_angle(Mline, middle_line_length);
+
+    // --- 发送二值图像 + 边线到上位机（逐飞助手） ---
+    static uint8_t L_buf[120][2], R_buf[120][2], M_buf[120][2];
+    for (int i = 0; i < sampled_Lline_num && i < 120; i++) { L_buf[i][0] = (uint8_t)sampled_Lline[i][0]; L_buf[i][1] = (uint8_t)sampled_Lline[i][1]; }
+    for (int i = 0; i < sampled_Rline_num && i < 120; i++) { R_buf[i][0] = (uint8_t)sampled_Rline[i][0]; R_buf[i][1] = (uint8_t)sampled_Rline[i][1]; }
+    for (int i = 0; i < middle_line_length && i < 120; i++) { M_buf[i][0] = (uint8_t)Mline[i][0]; M_buf[i][1] = (uint8_t)Mline[i][1]; }
+    gray_img_with_centerline_transmitter(bin_img_data, IMG_W, IMG_H, L_buf, sampled_Lline_num, R_buf, sampled_Rline_num, M_buf, middle_line_length, false, false);
 
     // if (udp.is_enable()) {
     //     // A. 发送原始 320x160 彩色图像 (用于确认识别结果)
