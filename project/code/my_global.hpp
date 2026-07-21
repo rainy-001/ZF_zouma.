@@ -106,6 +106,9 @@ extern float target_speed_l;                                    // 左轮目标�
 extern float cruising_speed;
 extern float onto_control;
 
+// -------------------- 车辆启动状态 (供视觉模块使用) --------------------
+extern bool car_started;
+
 // -------------------- PWM输出变量（中间变量，系统内部使用） --------------------
 extern int16_t speed_to_pwm_r;                                  // 右轮PWM输出值（PID计算结果）
 extern int16_t speed_to_pwm_l;                                  // 左轮PWM输出值（PID计算结果）

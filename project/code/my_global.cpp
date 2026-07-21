@@ -55,6 +55,9 @@ float target_speed_l = 0.0f;                                    // 左轮目标�
 float cruising_speed = CRUISING_SPEED;                          // 巡航速度，修改该值会直接影响小车速度
 float onto_control = 0;                                         // 方向PD控制量，跨线程传递参数
 
+// -------------------- 车辆启动状态 --------------------
+bool car_started = false;                                        // 车辆启动标志 (由按键/菜单设置)
+
 // -------------------- PWM输出变量（系统内部使用） --------------------
 int16_t speed_to_pwm_r = 0;                                     // 右轮PWM输出值（PID计算结果）
 int16_t speed_to_pwm_l = 0;                                     // 左轮PWM输出值（PID计算结果）
@@ -128,40 +131,45 @@ void key_scan_handler() //10ms
 //              通过 ips200.show_gray_image() 显示在屏幕左上角 (0,0)-(160,120)
 //-------------------------------------------------------------------------------------------------------------------
 // [已禁用] 二值图像显示 — 避免 SPI 刷屏干扰实时控制线程
+// 适配新视觉管线: 使用 RowAttribute 绘制边界线和中线
 void display_bin_handler() {
     // 1. 显示二值图像在屏幕左上角 (0,0)-(160,120)
     ips200.show_gray_image(0, 0, bin_img_data, IMG_W, IMG_H);
 
-    // 2. 绘制左边线（红色），将采样后的左边线点依次连接
-    for (int i = 0; i < sampled_Lline_num - 1; i++) {
-        int x1 = (int)sampled_Lline[i][0];
-        int y1 = (int)sampled_Lline[i][1];
-        int x2 = (int)sampled_Lline[i + 1][0];
-        int y2 = (int)sampled_Lline[i + 1][1];
-        if (x1 >= 0 && x1 < IMG_W && y1 >= 0 && y1 < IMG_H
-         && x2 >= 0 && x2 < IMG_W && y2 >= 0 && y2 < IMG_H) {
-            ips200.draw_line(x1, y1, x2, y2, RGB565_RED);
+    // 2. 绘制左边线（红色），从 RowAttribute 读取逐行边界
+    for (int i = 1; i < IPSH; i++) {
+        if (RowAttribute[i].IsLeftFind == 'T' && RowAttribute[i-1].IsLeftFind == 'T') {
+            int x1 = RowAttribute[i-1].LeftBorder;
+            int y1 = i - 1;
+            int x2 = RowAttribute[i].LeftBorder;
+            int y2 = i;
+            if (x1 >= 0 && x1 < IMG_W && y1 >= 0 && y1 < IMG_H
+             && x2 >= 0 && x2 < IMG_W && y2 >= 0 && y2 < IMG_H) {
+                ips200.draw_line(x1, y1, x2, y2, RGB565_RED);
+            }
         }
     }
 
-    // 3. 绘制右边线（蓝色），将采样后的右边线点依次连接
-    for (int i = 0; i < sampled_Rline_num - 1; i++) {
-        int x1 = (int)sampled_Rline[i][0];
-        int y1 = (int)sampled_Rline[i][1];
-        int x2 = (int)sampled_Rline[i + 1][0];
-        int y2 = (int)sampled_Rline[i + 1][1];
-        if (x1 >= 0 && x1 < IMG_W && y1 >= 0 && y1 < IMG_H
-         && x2 >= 0 && x2 < IMG_W && y2 >= 0 && y2 < IMG_H) {
-            ips200.draw_line(x1, y1, x2, y2, RGB565_BLUE);
+    // 3. 绘制右边线（蓝色），从 RowAttribute 读取逐行边界
+    for (int i = 1; i < IPSH; i++) {
+        if (RowAttribute[i].IsRightFind == 'T' && RowAttribute[i-1].IsRightFind == 'T') {
+            int x1 = RowAttribute[i-1].RightBorder;
+            int y1 = i - 1;
+            int x2 = RowAttribute[i].RightBorder;
+            int y2 = i;
+            if (x1 >= 0 && x1 < IMG_W && y1 >= 0 && y1 < IMG_H
+             && x2 >= 0 && x2 < IMG_W && y2 >= 0 && y2 < IMG_H) {
+                ips200.draw_line(x1, y1, x2, y2, RGB565_BLUE);
+            }
         }
     }
 
-    // 4. 绘制中线（绿色），将中线点依次连接
-    for (int i = 0; i < middle_line_length - 1; i++) {
-        int x1 = (int)Mline[i][0];
-        int y1 = (int)Mline[i][1];
-        int x2 = (int)Mline[i + 1][0];
-        int y2 = (int)Mline[i + 1][1];
+    // 4. 绘制中线（绿色），从 RowAttribute 读取逐行中线
+    for (int i = 1; i < IPSH; i++) {
+        int x1 = RowAttribute[i-1].Center;
+        int y1 = i - 1;
+        int x2 = RowAttribute[i].Center;
+        int y2 = i;
         if (x1 >= 0 && x1 < IMG_W && y1 >= 0 && y1 < IMG_H
          && x2 >= 0 && x2 < IMG_W && y2 >= 0 && y2 < IMG_H) {
             ips200.draw_line(x1, y1, x2, y2, RGB565_GREEN);
@@ -300,7 +308,7 @@ void pid_contol_handle()
 
 bool car_init(){
     // 导入透视变换矩阵
-    save_per_map();
+    // save_per_map() — 已移除，新视觉管线不使用透视变换
     // 导入基础参数并设置
     param_loading_from_file("/home/root/car_config.txt");
     param_print();
@@ -435,4 +443,11 @@ bool car_init(){
     }
 
     return true;
+}
+
+// ========================================== 获取当前时间 (毫秒) ==========================================
+uint32_t Get_Time_Ms(void) {
+    auto now = std::chrono::steady_clock::now();
+    auto duration = now.time_since_epoch();
+    return std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
 }

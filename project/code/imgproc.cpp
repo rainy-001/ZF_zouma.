@@ -1,1481 +1,1893 @@
 #include "imgproc.hpp"
+#include <cstdint>
+#include <vector>
+#include <unistd.h>
+
+using namespace std;
 using namespace cv;
 
-/*决策变量******************/
-float onto = 0.0f;            // 最终处理方向，已限制幅度在-30~30.0f之间
-float angle_compensation = 0; // 方向补偿量(静态最中间偏差)
-int middle_line_length = 0;   // 中线长度
-float max_angle = 0.0f;       // 最大角点值,用于调试
-/******************图像变量*/
-//图像
-Mat frame_color;                // 用于处理的图像帧
-Mat frame_gray;                 // 灰度图像帧
-Mat frame_bin;                  // 二值图像帧
+// ========================================== 全局图像数组 (160x120) ==========================================
+uint8_t Cramp_image[IPSH][IPSW];       // 压缩后的灰度图像
+uint8_t heheImage[IPSH][IPSW];         // 二值化图像 (0=黑/赛道, 1=白/赛道边界外)
+uint8_t color_image[IPSH][IPSW][3];    // 彩色图像 BGR
 
-uint8_t* img_gray = nullptr;              // 灰度图像指针
-uint8_t bin_img_data[IMG_H * IMG_W];     // 二值化图像数据(0/255)，供显示线程读取
-AimPoint_TypeDef aim_point;
+// ========================================== 红色物块检测变量 ==========================================
+int red_block_detected = 0;
+int red_block_center_x = -1;
+int red_block_center_y = -1;
+int extract_region_x = -1;
+int extract_region_y = -1;
+int extract_region_size = 64;
 
+// ========================================== NCNN 模型 (已禁用) ==========================================
+static int ncnn_initialized = 0;
+static std::string last_classification_result = "";
+static int consecutive_detect_count = 0;
+static std::string confirmed_classification = "";
 
-/*--图片去畸--*/
-Mat ud_map_cv;
-/*去畸变矩阵*/
-float undistort_map_x[IMG_H][IMG_W];
-float undistort_map_y[IMG_H][IMG_W];
-/*图像变量******************/
+// ========================================== 扫线全局变量 ==========================================
+static uint8_t* StoreSingleLine;
+static int Ysite = 0, Xsite = 0;
+static int BottomBorderRight = 158;       // 第119行右边界 (原 79 → 158)
+static int BottomBorderLeft = 0;          // 第119行左边界
+static int BottomCenter = 0;              // 第119行中点
+RowAttributetypedef RowAttribute[IPSH];   // 每行边界信息 (120行)
+static uint8_t ExtenLFlag = 0;
+static uint8_t ExtenRFlag = 0;
+static int IntervalLow = 0, IntervalHigh = 0;
+int ImageScanInterval;                    // 扫边范围
+int ImageScanInterval_Cross;              // 十字扫线范围
+static int ytemp = 0;
+static int TFSite = 0, left_FTSite = 0, right_FTSite = 0;
+static float DetR = 0, DetL = 0;
+ImageParametertypedef ImageParameter;
+SystemDatatypdef SystemData;
 
-/**************边线处理变量*/
-/*参数变量*/
-uint8_t all_block_size = 7;
-uint8_t adapt_clip = 7;         // 自适应迷宫巡线偏差
-uint8_t start_thre = 130;
+// ========================================== 前瞻权重 (不变, 分辨率无关) ==========================================
+float Weighting[10] = { 0.96, 0.92, 0.88, 0.83, 0.77, 0.59, 0.65, 0.59, 0.53, 0.59 };
+
+// ========================================== 外部/全局变量 ==========================================
+uint32_t encoder_distance = 0, ramp_distance = 0, stop_distance = 0;
+uint32_t Cross_TPoint = 44;              // 原 22 → 44
+uint32_t Rings_TPoint = 0;
+uint32_t Straight_TPoint = 44;           // 原 22 → 44
+uint8_t Ring_Help_Flag = 0;
+int Repair_Point_Xsite, Repair_Point_Ysite;
+int Right_RingsFlag_Point1_Ysite, Right_RingsFlag_Point2_Ysite;
+int Left_RingsFlag_Point1_Ysite, Left_RingsFlag_Point2_Ysite;
+int Point_Xsite, Point_Ysite;
+
+// ========================================== 赛道半宽数组 (120行, 60行→120行插值) ==========================================
+// 原 60 行: {3,3,3,3,3,3,5,5,6,6,6,6,6,6,7,7,7,7,8,8,8,8,9,9,10,10,11,11,11,11,
+//            12,12,13,13,14,14,15,15,15,15,16,16,16,16,17,17,18,18,19,19,20,20,21,21,22,22,23,23,24,24}
+// 扩展到 120 行: 每个原值复制为相邻两行
+uint8_t Half_Road_Wide[IPSH] = {
+    3,3,  3,3,  3,3,  3,3,  3,3,  3,3,   // 0-11   (原 0-5 ×2)
+    5,5,  5,5,                               // 12-15  (原 6-7 ×2)
+    6,6,  6,6,  6,6,  6,6,  6,6,  6,6,     // 16-27  (原 8-13 ×2)
+    7,7,  7,7,  7,7,  7,7,                  // 28-35  (原 14-17 ×2)
+    8,8,  8,8,  8,8,  8,8,                  // 36-43  (原 18-21 ×2)
+    9,9,  9,9,                              // 44-47  (原 22-23 ×2)
+    10,10, 10,10,                            // 48-51  (原 24-25 ×2)
+    11,11, 11,11, 11,11, 11,11,             // 52-59  (原 26-29 ×2)
+    12,12, 12,12,                            // 60-63  (原 30-31 ×2)
+    13,13, 13,13,                            // 64-67  (原 32-33 ×2)
+    14,14, 14,14,                            // 68-71  (原 34-35 ×2)
+    15,15, 15,15, 15,15, 15,15,             // 72-79  (原 36-39 ×2)
+    16,16, 16,16, 16,16, 16,16,             // 80-87  (原 40-43 ×2)
+    17,17, 17,17,                            // 88-91  (原 44-45 ×2)
+    18,18, 18,18,                            // 92-95  (原 46-47 ×2)
+    19,19, 19,19,                            // 96-99  (原 48-49 ×2)
+    20,20, 20,20,                            // 100-103(原 50-51 ×2)
+    21,21, 21,21,                            // 104-107(原 52-53 ×2)
+    22,22, 22,22,                            // 108-111(原 54-55 ×2)
+    23,23, 23,23,                            // 112-115(原 56-57 ×2)
+    24,24, 24,24                             // 116-119(原 58-59 ×2)
+};
+
+// ========================================== onto 输出接口 ==========================================
+float onto = 0.0f;
+float angle_compensation = 0.0f;
+
+// ========================================== zouma 兼容图像变量 ==========================================
+cv::Mat frame_color;
+cv::Mat frame_gray;
+cv::Mat frame_bin;
+uint8_t* img_gray = nullptr;
+uint8_t bin_img_data[IPSW * IPSH];
+
+// ========================================== 调试变量 ==========================================
+float variance, variance_acc;
 float avg_angle;
-float map_x[IMG_H][IMG_W];      // 原图点(x,y)透视后x坐标
-float map_y[IMG_H][IMG_W];      // 原图点(x,y)透视后y坐标
-// 方向数组
-int dir_front[4][2]      = {{0,  -1},{1, 0},{0, 1},{-1, 0}};
-int dir_frontleft[4][2]  = {{-1, -1},{1,-1},{1, 1},{-1, 1}};
-int dir_frontright[4][2] = {{1,  -1},{1, 1},{-1,1},{-1,-1}};
+uint8_t all_block_size = 7;
+uint8_t start_thre = 130;
 
-/*边线变量*/
-//采样前后边线长度
-int Lline_num, Rline_num;
-int sampled_Lline_num, sampled_Rline_num;
-int Mline_num;
-// 边线
-int Lline[POINTS_MAX_LEN][2], Rline[POINTS_MAX_LEN][2];                      // 原始
-int ud_Lline[POINTS_MAX_LEN][2], ud_Rline[POINTS_MAX_LEN][2];                // 去畸变
-float per_Lline[POINTS_MAX_LEN][2], per_Rline[POINTS_MAX_LEN][2];            // 透视
-float blurred_Lline[POINTS_MAX_LEN][2], blurred_Rline[POINTS_MAX_LEN][2];    // 滤波
-float sampled_Lline[POINTS_MAX_LEN][2], sampled_Rline[POINTS_MAX_LEN][2];    // 等距采样
-float L2Mline[POINTS_MAX_LEN][2], R2Mline[POINTS_MAX_LEN][2];                // 左右得到的中线
-float (*Mline)[2] = L2Mline;                                                 // 最终中线
-float dangle_Lline[POINTS_MAX_LEN], dangle_Rline[POINTS_MAX_LEN];            // 局部角度变化率
-// 非极大抑制
-float nms_Lline,nms_Rline;          // 角点值
-int nms_Lline_idx,nms_Rline_idx;    // 索引
-
-cv::Mat M = (cv::Mat_<float>(3, 3) <<
--1.7987879419009005,-4.6836929815029515,224.950105042017,
--0.02597752463054235,-8.582940180382508,304.59513546798064,
--0.0003848522167487723,-0.05828171785955768,1.0);
-
-cv::Mat M_Reverse = (cv::Mat_<float>(3, 3) <<
--0.5567704942449283,0.5116792735001106,-30.609436463231717,
-0.005540545406144685,0.10396670497412587,-32.91409885685576,
-0.00010863814521852267,0.006256279068760795,-0.9300703326531625);
-/*边线处理变量**************/
-
-//巡线决策机
-Tracking_Decision_Machine_TypeDef tracking_decision_machine = {
-    .max_L_angle = 0.0f,        
-    .max_R_angle = 0.0f,        
-    .max_angle = 0.0f,          
-
-    .state = 0,  
-    .element_processing_flage = 0,            
-    .state_time_locking = STATE_TIME_LOCKING,    
-
-    .longest_side = 0,          
-    .left_length = 0,           
-    .right_length = 0,          
-
-    .target_boundary = 0   //0左，1右     
-};
-
-Circle_Tracking_Machine_TypeDef cricle_decision_machine = {
-    .state = 0,         //初始状态
-    .state_locking = 0, //初始状态未上锁
-    .side = 0           //初始
-};
-
-
-// 完整的一个边线处理
-void line_process(uint8_t height_start, uint8_t height_min){
-
-    // 左右巡线
-    search_Lline(height_start, height_min);
-    search_Rline(height_start, height_min);
-    // 点集透视
-    perspective_transform_points(Lline,Lline_num,per_Lline);
-    // 点集滤波
-    blur_points(per_Lline,Lline_num,blurred_Lline);
-    // 点集采样
-    resample_points(blurred_Lline,Lline_num,sampled_Lline,&sampled_Lline_num);
-    // 点集角度
-    local_angle_points(sampled_Lline,sampled_Lline_num,dangle_Lline);
-    // 极大角度
-    nms_angle(dangle_Lline,sampled_Lline_num,&nms_Lline,&nms_Lline_idx);
-    // track_leftline();
-
-    // 右边线处理
-    perspective_transform_points(Rline,Rline_num,per_Rline);
-    blur_points(per_Rline,Rline_num,blurred_Rline);
-    resample_points(blurred_Rline,Rline_num,sampled_Rline,&sampled_Rline_num);
-    local_angle_points(sampled_Rline,sampled_Rline_num,dangle_Rline);
-    nms_angle(dangle_Rline,sampled_Rline_num,&nms_Rline,&nms_Rline_idx);
-    // track_rightline();
-    
-}
-
-//大津法二值化 返回阈值
-uint8 get_otsu_thres(uint8 *img, int x0, int x1, int y0, int y1){
-    /*灰度直方图参数*/
-    uint16 histogram[256] = {0}; // 灰度直方图
-    uint32 min_value, max_value;
-
-    uint32 pix_amount = 0;   // 像素点总数
-    uint32 pix_integral = 0; // 灰度值总数
-
-    uint32 pix_back_amount = 0;   // 前景像素点总数
-    uint32 pix_back_integral = 0; // 前景灰度值
-
-    int32 pix_fore_amount = 0;   // 背景像素点总数
-    int32 pix_fore_integral = 0; // 背景灰度值
-
-    float omega_back, omega_fore, micro_back, micro_fore, sigma_beta, sigma; // 类间方差：浮点型更精确
-
-    uint8 thres_result = 0;
-
-    // 隔一行取一个值，更快
-    for (int y = y0; y < y1; y +=2)
-        for (int x = x0; x < x1; x +=2)
-            histogram[IMG_AT(img, x, y)]++;
-
-    for (min_value = 0; min_value < 256 && histogram[min_value] == 0; min_value++)
-    {
-        ; // 获取最小灰度的值
+// ========================================== OTSU 大津法阈值计算 ==========================================
+uint8_t Threshold_deal(uint8_t* image,
+    uint16_t col,
+    uint16_t row,
+    uint32_t pixel_threshold) {
+#define GrayScale 256
+    uint16_t width = col;
+    uint16_t height = row;
+    int pixelCount[GrayScale];
+    float pixelPro[GrayScale];
+    int i, j, pixelSum = width * height;
+    uint8_t threshold = 0;
+    uint8_t* data = image;
+    for (i = 0; i < GrayScale; i++) {
+        pixelCount[i] = 0;
+        pixelPro[i] = 0;
     }
-    for (max_value = 255; max_value > min_value && histogram[min_value] == 0; max_value--)
-    {
-        ; // 获取最大灰度的值
-    }
-
-    if (max_value == min_value)
-    {
-        return ((uint8)(max_value)); // 图像中只有一个颜色
-    }
-    if (min_value + 1 == max_value)
-    {
-        return ((uint8)(min_value)); // 图像中只有二个颜色
-    }
-
-    /*OSTU大律法*/
-    pix_integral = 0;
-    for (uint16 j = (uint16)min_value; j <= max_value; j++)
-    {
-        pix_amount += histogram[j];       // 像素总数
-        pix_integral += histogram[j] * j; // 灰度值总数
-    }
-    sigma_beta = -1;
-
-    for (uint16 j = (uint16)min_value; j < max_value; j++)
-    {
-        pix_back_amount = pix_back_amount + histogram[j];                                        // 前景像素点数
-        pix_fore_amount = pix_amount - pix_back_amount;                                          // 背景像素点数
-        omega_back = (float)pix_back_amount / pix_amount;                                        // 前景像素百分比
-        omega_fore = (float)pix_fore_amount / pix_amount;                                        // 背景像素百分比
-        pix_back_integral += histogram[j] * j;                                                   // 前景灰度值
-        pix_fore_integral = pix_integral - pix_back_integral;                                    // 背景灰度值
-        micro_back = (float)pix_back_integral / pix_back_amount;                                 // 前景灰度百分比
-        micro_fore = (float)pix_fore_integral / pix_fore_amount;                                 // 背景灰度百分比
-        sigma = omega_back * omega_fore * (micro_back - micro_fore) * (micro_back - micro_fore); // 计算类间方差
-        if (sigma > sigma_beta)                                                                  // 遍历最大的类间方差g //找出最大类间方差以及对应的阈值
-        {
-            sigma_beta = sigma;
-            thres_result = (uint8)j;
+    uint32_t gray_sum = 0;
+    for (i = 0; i < height; i += 1) {
+        for (j = 0; j < width; j += 1) {
+            pixelCount[(int)data[i * width + j]]++;
+            gray_sum += (int)data[i * width + j];
         }
     }
-    return thres_result; // 返回最佳阈值;
+
+    for (i = 0; i < GrayScale; i++) {
+        pixelPro[i] = (float)pixelCount[i] / pixelSum;
+    }
+
+    float w0, w1, u0tmp, u1tmp, u0, u1, u, deltaTmp, deltaMax = 0;
+    w0 = w1 = u0tmp = u1tmp = u0 = u1 = u = deltaTmp = 0;
+    for (j = 0; j < pixel_threshold; j++) {
+        w0 += pixelPro[j];
+        u0tmp += j * pixelPro[j];
+        w1 = 1 - w0;
+        // OTSU 除法保护: w0, w1 可能为 0
+        if (w0 < 0.0001f || w1 < 0.0001f) continue;
+        u1tmp = gray_sum / pixelSum - u0tmp;
+        u0 = u0tmp / w0;
+        u1 = u1tmp / w1;
+        u = u0tmp + u1tmp;
+        deltaTmp = w0 * pow((u0 - u), 2) + w1 * pow((u1 - u), 2);
+        if (deltaTmp > deltaMax) {
+            deltaMax = deltaTmp;
+            threshold = (uint8_t)j;
+        }
+        if (deltaTmp < deltaMax) {
+            break;
+        }
+    }
+    return threshold;
 }
 
-// 保存映射
-void save_per_map(void) {
-    // 创建写入文本对象 - 明确使用std命名空间
-    std::ofstream fout("maps/per_map.txt");
-    
-    // 检查文件是否成功打开
-    if (!fout.is_open()) {
-        std::cerr << "错误：无法打开文件 maps/per_map.txt" << std::endl;
+// ========================================== 阈值分离与二值化 ==========================================
+void Thershold_separation_Otsu(void) {
+    ImageParameter.Threshold =
+        (uint8_t)Threshold_deal(Cramp_image[0], IPSW, IPSH, (uint32_t)ImageParameter.Threshold_detach);
+    if (ImageParameter.Threshold < ImageParameter.Threshold_static)
+        ImageParameter.Threshold = (uint8_t)ImageParameter.Threshold_static;
+    uint8_t m, n;
+    uint8_t ther;
+    for (m = 0; m < IPSH; m++) {
+        for (n = 0; n < IPSW; n++) {
+            // 边缘区域补偿防止图像不均匀 (原 n≤15 → n≤30, n≥65→n≥130)
+            if (n <= 30)
+                ther = ImageParameter.Threshold - 10;
+            else if ((n > 140 && n <= 150))
+                ther = ImageParameter.Threshold - 10;
+            else if (n >= 130)
+                ther = ImageParameter.Threshold - 10;
+            else
+                ther = ImageParameter.Threshold;
+            /*二值化*/
+            if (Cramp_image[m][n] > (ther))
+                heheImage[m][n] = 1;  // 白
+            else
+                heheImage[m][n] = 0;  // 黑
+        }
+    }
+}
+
+// ========================================== 跳变点检测 ==========================================
+void JumpPointAndType(uint8_t* p, uint8_t type, int L, int H, JumpPointtypedef* Q) {
+    int i = 0;
+    if (type == 'L') {
+        for (i = H; i >= L; i--) {
+            if (*(p + i) == 1 && *(p + i - 1) != 1) {
+                Q->point = i;
+                Q->type = 'T';
+                break;
+            }
+            else if (i == (L + 1)) {
+                if (*(p + (L + H) / 2) != 0) {
+                    Q->point = (L + H) / 2;
+                    Q->type = 'W';
+                    break;
+                }
+                else {
+                    Q->point = H;
+                    Q->type = 'H';
+                    break;
+                }
+            }
+        }
+    }
+    else if (type == 'R') {
+        for (i = L; i <= H; i++) {
+            if (*(p + i) == 1 && *(p + i + 1) != 1) {
+                Q->point = i;
+                Q->type = 'T';
+                break;
+            }
+            else if (i == (H - 1)) {
+                if (*(p + (L + H) / 2) != 0) {
+                    Q->point = (L + H) / 2;
+                    Q->type = 'W';
+                    break;
+                }
+                else {
+                    Q->point = L;
+                    Q->type = 'H';
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// ========================================== 底部基线扫描 (第 119 行 + 118→110) ==========================================
+static uint8_t DrawLinesBasic(void) {
+    /* 单独扫第 119 行 (原 59 → 119) */
+    StoreSingleLine = heheImage[119];
+    if (*(StoreSingleLine + PictureCentring) == 1 || *(StoreSingleLine + PictureCentring) == 0) {
+        // 搜索右边线
+        BottomBorderRight = 78;  // 默认值 (原 39 → 78)
+        for (Xsite = 159; Xsite > PictureCentring; Xsite--) {
+            if (*(StoreSingleLine + Xsite) == 0 &&
+                *(StoreSingleLine + Xsite - 1) == 1) {
+                BottomBorderRight = Xsite;
+                break;
+            }
+        }
+        if (BottomBorderRight == 78) {
+            for (Xsite = 159; Xsite > PictureCentring; Xsite--) {
+                if (*(StoreSingleLine + Xsite) == 1 &&
+                    *(StoreSingleLine + Xsite - 1) == 1) {
+                    BottomBorderRight = Xsite;
+                    break;
+                }
+            }
+        }
+        // 搜索左边线
+        BottomBorderLeft = 78;
+        for (Xsite = 0; Xsite < PictureCentring; Xsite++) {
+            if (*(StoreSingleLine + Xsite) == 0 &&
+                *(StoreSingleLine + Xsite + 1) == 1) {
+                BottomBorderLeft = Xsite;
+                break;
+            }
+        }
+        if (BottomBorderLeft == 78) {
+            for (Xsite = 0; Xsite < PictureCentring; Xsite++) {
+                if (*(StoreSingleLine + Xsite) == 1 &&
+                    *(StoreSingleLine + Xsite + 1) == 1) {
+                    BottomBorderLeft = Xsite;
+                    break;
+                }
+            }
+        }
+    }
+    BottomCenter = (BottomBorderLeft + BottomBorderRight) / 2;
+    RowAttribute[119].LeftBorder = BottomBorderLeft;
+    RowAttribute[119].RightBorder = BottomBorderRight;
+    RowAttribute[119].Center = BottomCenter;
+    RowAttribute[119].Wide = BottomBorderRight - BottomBorderLeft;
+    RowAttribute[119].IsLeftFind = 'T';
+    RowAttribute[119].IsRightFind = 'T';
+
+    /* 第 118→110 行扫描 (原 58→54, 共 9 行 → 118→110, 共 9 行) */
+    for (Ysite = 118; Ysite > 110; Ysite--) {
+        StoreSingleLine = heheImage[Ysite];
+        // 扫右边线
+        for (Xsite = 159; Xsite > RowAttribute[Ysite + 1].Center; Xsite--) {
+            if (*(StoreSingleLine + Xsite) == 0 && *(StoreSingleLine + Xsite - 1) == 1) {
+                RowAttribute[Ysite].RightBorder = Xsite;
+                break;
+            }
+        }
+        if (Xsite <= RowAttribute[Ysite + 1].Center) {
+            for (Xsite = 159; Xsite > RowAttribute[Ysite + 1].Center; Xsite--) {
+                if (*(StoreSingleLine + Xsite) == 1 && *(StoreSingleLine + Xsite - 1) == 1) {
+                    RowAttribute[Ysite].RightBorder = Xsite;
+                    break;
+                }
+            }
+        }
+        // 扫左边线
+        for (Xsite = 0; Xsite < RowAttribute[Ysite + 1].Center; Xsite++) {
+            if (*(StoreSingleLine + Xsite) == 0 && *(StoreSingleLine + Xsite + 1) == 1) {
+                RowAttribute[Ysite].LeftBorder = Xsite;
+                break;
+            }
+        }
+        if (Xsite >= RowAttribute[Ysite + 1].Center) {
+            for (Xsite = 0; Xsite < RowAttribute[Ysite + 1].Center; Xsite++) {
+                if (*(StoreSingleLine + Xsite) == 1 && *(StoreSingleLine + Xsite + 1) == 1) {
+                    RowAttribute[Ysite].LeftBorder = Xsite;
+                    break;
+                }
+            }
+        }
+        RowAttribute[Ysite].IsLeftFind = 'T';
+        RowAttribute[Ysite].IsRightFind = 'T';
+        RowAttribute[Ysite].Center =
+            (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+        RowAttribute[Ysite].Wide =
+            RowAttribute[Ysite].RightBorder - RowAttribute[Ysite].LeftBorder;
+    }
+    return 'T';
+}
+
+// ========================================== 边线追逐 (从第 110 行往上前进) ==========================================
+static void DrawLinesProcess(void) {
+    uint8_t L_Found_T = 'F';
+    uint8_t Get_L_line = 'F';
+    uint8_t R_Found_T = 'F';
+    uint8_t Get_R_line = 'F';
+    float D_L = 0;
+    float D_R = 0;
+    int ytemp_W_L;
+    int ytemp_W_R;
+    ExtenRFlag = 0;
+    ExtenLFlag = 0;
+
+    for (Ysite = 110; Ysite > ImageParameter.OFFLine; Ysite--) {
+        ImageScanInterval_Cross = (110 - Ysite) / 2 + 5;
+        StoreSingleLine = heheImage[Ysite];
+        JumpPointtypedef JumpPoint[2];
+
+        /****************************** 扫描右边线 ******************************/
+        if (ImageParameter.WhiteLine < 5) {
+            IntervalLow = RowAttribute[Ysite + 1].RightBorder - ImageScanInterval;
+            IntervalHigh = RowAttribute[Ysite + 1].RightBorder + ImageScanInterval;
+        }
+        else {
+            IntervalLow = RowAttribute[Ysite + 1].RightBorder - ImageScanInterval_Cross;
+            IntervalHigh = RowAttribute[Ysite + 1].RightBorder + ImageScanInterval_Cross;
+        }
+        LimitL(IntervalLow);
+        LimitH(IntervalHigh);
+        JumpPointAndType(StoreSingleLine, 'R', IntervalLow, IntervalHigh, &JumpPoint[1]);
+
+        /****************************** 扫描左边线 ******************************/
+        if (ImageParameter.WhiteLine < 5) {
+            IntervalLow = RowAttribute[Ysite + 1].LeftBorder - ImageScanInterval;
+            IntervalHigh = RowAttribute[Ysite + 1].LeftBorder + ImageScanInterval;
+        }
+        else {
+            IntervalLow = RowAttribute[Ysite + 1].LeftBorder - ImageScanInterval_Cross;
+            IntervalHigh = RowAttribute[Ysite + 1].LeftBorder + ImageScanInterval_Cross;
+        }
+        LimitL(IntervalLow);
+        LimitH(IntervalHigh);
+        JumpPointAndType(StoreSingleLine, 'L', IntervalLow, IntervalHigh, &JumpPoint[0]);
+
+        if (JumpPoint[0].type == 'W') {
+            RowAttribute[Ysite].LeftBorder = RowAttribute[Ysite + 1].LeftBorder;
+        }
+        else {
+            RowAttribute[Ysite].LeftBorder = JumpPoint[0].point;
+        }
+
+        if (JumpPoint[1].type == 'W') {
+            RowAttribute[Ysite].RightBorder = RowAttribute[Ysite + 1].RightBorder;
+        }
+        else {
+            RowAttribute[Ysite].RightBorder = JumpPoint[1].point;
+        }
+
+        RowAttribute[Ysite].IsLeftFind = JumpPoint[0].type;
+        RowAttribute[Ysite].IsRightFind = JumpPoint[1].type;
+
+        /************************************ 处理大跳变 (H类) *************************************/
+        if ((RowAttribute[Ysite].IsLeftFind == 'H' || RowAttribute[Ysite].IsRightFind == 'H')) {
+            if (RowAttribute[Ysite].IsLeftFind == 'H') {
+                for (Xsite = (RowAttribute[Ysite].LeftBorder + 1);
+                    Xsite <= (RowAttribute[Ysite].RightBorder - 1); Xsite++) {
+                    if ((*(StoreSingleLine + Xsite) == 0) && (*(StoreSingleLine + Xsite + 1) != 0)) {
+                        RowAttribute[Ysite].LeftBorder = Xsite;
+                        RowAttribute[Ysite].IsLeftFind = 'T';
+                        break;
+                    }
+                    else if (*(StoreSingleLine + Xsite) != 0)
+                        break;
+                    else if (Xsite == (RowAttribute[Ysite].RightBorder - 1)) {
+                        RowAttribute[Ysite].LeftBorder = Xsite;
+                        RowAttribute[Ysite].IsLeftFind = 'T';
+                        break;
+                    }
+                }
+            }
+            if (RowAttribute[Ysite].IsRightFind == 'H') {
+                for (Xsite = (RowAttribute[Ysite].RightBorder - 1);
+                    Xsite >= (RowAttribute[Ysite].LeftBorder + 1); Xsite--) {
+                    if ((*(StoreSingleLine + Xsite) == 0) && (*(StoreSingleLine + Xsite - 1) != 0)) {
+                        RowAttribute[Ysite].RightBorder = Xsite;
+                        RowAttribute[Ysite].IsRightFind = 'T';
+                        break;
+                    }
+                    else if (*(StoreSingleLine + Xsite) != 0)
+                        break;
+                    else if (Xsite == (RowAttribute[Ysite].LeftBorder + 1)) {
+                        RowAttribute[Ysite].RightBorder = Xsite;
+                        RowAttribute[Ysite].IsRightFind = 'T';
+                        break;
+                    }
+                }
+            }
+        }
+
+        /************************************ 无边行处理 ************************************/
+        int ysite = 0;
+        uint8_t L_found_point = 0;
+        uint8_t R_found_point = 0;
+
+        // 处理右边线无边
+        if (RowAttribute[Ysite].IsRightFind == 'W' && Ysite > 20 && Ysite < 100) {
+            if (Get_R_line == 'F') {
+                Get_R_line = 'T';
+                ytemp_W_R = Ysite + 2;
+                for (ysite = Ysite + 1; ysite < Ysite + 15; ysite++) {
+                    if (RowAttribute[ysite].IsRightFind == 'T') {
+                        R_found_point++;
+                    }
+                }
+                if (R_found_point > 8) {
+                    D_R = ((float)(RowAttribute[Ysite + R_found_point].RightBorder -
+                        RowAttribute[Ysite + 3].RightBorder)) / ((float)(R_found_point - 3));
+                    if (D_R > 0) {
+                        R_Found_T = 'T';
+                    }
+                    else {
+                        R_Found_T = 'F';
+                        if (D_R < 0) {
+                            ExtenRFlag = 'F';
+                        }
+                    }
+                }
+            }
+            if (R_Found_T == 'T') {
+                RowAttribute[Ysite].RightBorder =
+                    RowAttribute[ytemp_W_R].RightBorder - D_R * (ytemp_W_R - Ysite);
+            }
+            LimitL(RowAttribute[Ysite].RightBorder);
+            LimitH(RowAttribute[Ysite].RightBorder);
+        }
+
+        // 处理左边线无边
+        if (RowAttribute[Ysite].IsLeftFind == 'W' && Ysite > 20 && Ysite < 100) {
+            if (Get_L_line == 'F') {
+                Get_L_line = 'T';
+                ytemp_W_L = Ysite + 2;
+                for (ysite = Ysite + 1; ysite < Ysite + 15; ysite++) {
+                    if (RowAttribute[ysite].IsLeftFind == 'T') {
+                        L_found_point++;
+                    }
+                }
+                if (L_found_point > 8) {
+                    D_L = ((float)(RowAttribute[Ysite + 3].LeftBorder -
+                        RowAttribute[Ysite + L_found_point].LeftBorder)) /
+                        ((float)(L_found_point - 3));
+                    if (D_L > 0) {
+                        L_Found_T = 'T';
+                    }
+                    else {
+                        L_Found_T = 'F';
+                        if (D_L < 0) {
+                            ExtenLFlag = 'F';
+                        }
+                    }
+                }
+            }
+            if (L_Found_T == 'T') {
+                RowAttribute[Ysite].LeftBorder =
+                    RowAttribute[ytemp_W_L].LeftBorder + D_L * (ytemp_W_L - Ysite);
+            }
+            LimitL(RowAttribute[Ysite].LeftBorder);
+            LimitH(RowAttribute[Ysite].LeftBorder);
+        }
+
+        /************************************ 数据整定 ************************************/
+        if (RowAttribute[Ysite].IsLeftFind == 'W' && RowAttribute[Ysite].IsRightFind == 'W') {
+            ImageParameter.WhiteLine++;
+        }
+        if (RowAttribute[Ysite].IsLeftFind == 'W' && Ysite < 110) {
+            ImageParameter.Miss_Left_lines++;
+        }
+        if (RowAttribute[Ysite].IsRightFind == 'W' && Ysite < 110) {
+            ImageParameter.Miss_Right_lines++;
+        }
+
+        LimitL(RowAttribute[Ysite].LeftBorder);
+        LimitH(RowAttribute[Ysite].LeftBorder);
+        LimitL(RowAttribute[Ysite].RightBorder);
+        LimitH(RowAttribute[Ysite].RightBorder);
+
+        RowAttribute[Ysite].Wide =
+            RowAttribute[Ysite].RightBorder - RowAttribute[Ysite].LeftBorder;
+        RowAttribute[Ysite].Center =
+            (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+
+        if (RowAttribute[Ysite].Wide <= 12) {  // 原 6 → 12
+            ImageParameter.OFFLine = Ysite + 1;
+            break;
+        }
+        else if (RowAttribute[Ysite].RightBorder <= 20 || RowAttribute[Ysite].LeftBorder >= 140) {
+            // 原 10 → 20, 70 → 140
+            ImageParameter.OFFLine = Ysite + 1;
+            break;
+        }
+    }
+    return;
+}
+
+// ========================================== 八邻域扫线 (上交大左右手法则) ==========================================
+void Search_Bottom_Line_OTSU(uint8_t imageInput[IPSH][IPSW], uint8_t Row, uint8_t Col, uint8_t Bottonline) {
+    for (int Xsite = Col / 2 - 2; Xsite > 1; Xsite--) {
+        if (imageInput[Bottonline][Xsite] == 1 && imageInput[Bottonline][Xsite - 1] == 0) {
+            RowAttribute[Bottonline].LeftBoundary = Xsite;
+            break;
+        }
+    }
+    for (int Xsite = Col / 2 + 2; Xsite < IPSW - 1; Xsite++) {
+        if (imageInput[Bottonline][Xsite] == 1 && imageInput[Bottonline][Xsite + 1] == 0) {
+            RowAttribute[Bottonline].RightBoundary = Xsite;
+            break;
+        }
+    }
+}
+
+void Search_Left_and_Right_Lines(uint8_t imageInput[IPSH][IPSW], uint8_t Row, uint8_t Col, uint8_t Bottonline) {
+    int Left_Rule[2][8] = {
+        {0,-1,1,0,0,1,-1,0},
+        {-1,-1,1,-1,1,1,-1,1}
+    };
+    int Right_Rule[2][8] = {
+        {0,-1,1,0,0,1,-1,0},
+        {1,-1,1,1,-1,1,-1,-1}
+    };
+    int num = 0;
+    uint8_t Left_Ysite = Bottonline;
+    uint8_t Left_Xsite = (uint8_t)RowAttribute[Bottonline].LeftBoundary;
+    uint8_t Left_Rirection = 0;
+    uint8_t Pixel_Left_Ysite = Bottonline;
+    uint8_t Pixel_Left_Xsite = 0;
+
+    uint8_t Right_Ysite = Bottonline;
+    uint8_t Right_Xsite = (uint8_t)RowAttribute[Bottonline].RightBoundary;
+    uint8_t Right_Rirection = 0;
+    uint8_t Pixel_Right_Ysite = Bottonline;
+    uint8_t Pixel_Right_Xsite = 0;
+    uint8_t Ysite = Bottonline;
+    ImageParameter.OFFLineBoundary = 10;  // 原 5 → 10
+    while (1) {
+        num++;
+        if (num > 400) {
+            ImageParameter.OFFLineBoundary = Ysite;
+            break;
+        }
+        if (Ysite >= Pixel_Left_Ysite && Ysite >= Pixel_Right_Ysite) {
+            if (Ysite < ImageParameter.OFFLineBoundary) {
+                ImageParameter.OFFLineBoundary = Ysite;
+                break;
+            }
+            else {
+                Ysite--;
+            }
+        }
+        /********* 左边巡线 *******/
+        if ((Pixel_Left_Ysite > Ysite) || Ysite == ImageParameter.OFFLineBoundary) {
+            Pixel_Left_Ysite = Left_Ysite + Left_Rule[0][2 * Left_Rirection + 1];
+            Pixel_Left_Xsite = Left_Xsite + Left_Rule[0][2 * Left_Rirection];
+
+            if (imageInput[Pixel_Left_Ysite][Pixel_Left_Xsite] == 0) {
+                if (Left_Rirection == 3)
+                    Left_Rirection = 0;
+                else
+                    Left_Rirection++;
+            }
+            else {
+                Pixel_Left_Ysite = Left_Ysite + Left_Rule[1][2 * Left_Rirection + 1];
+                Pixel_Left_Xsite = Left_Xsite + Left_Rule[1][2 * Left_Rirection];
+
+                if (imageInput[Pixel_Left_Ysite][Pixel_Left_Xsite] == 0) {
+                    Left_Ysite = Left_Ysite + Left_Rule[0][2 * Left_Rirection + 1];
+                    Left_Xsite = Left_Xsite + Left_Rule[0][2 * Left_Rirection];
+                    if (RowAttribute[Left_Ysite].LeftBoundary_First == 0)
+                        RowAttribute[Left_Ysite].LeftBoundary_First = Left_Xsite;
+                    RowAttribute[Left_Ysite].LeftBoundary = Left_Xsite;
+                }
+                else {
+                    Left_Ysite = Left_Ysite + Left_Rule[1][2 * Left_Rirection + 1];
+                    Left_Xsite = Left_Xsite + Left_Rule[1][2 * Left_Rirection];
+                    if (RowAttribute[Left_Ysite].LeftBoundary_First == 0)
+                        RowAttribute[Left_Ysite].LeftBoundary_First = Left_Xsite;
+                    RowAttribute[Left_Ysite].LeftBoundary = Left_Xsite;
+                    if (Left_Rirection == 0)
+                        Left_Rirection = 3;
+                    else
+                        Left_Rirection--;
+                }
+            }
+        }
+        /********* 右边巡线 *******/
+        if ((Pixel_Right_Ysite > Ysite) || Ysite == ImageParameter.OFFLineBoundary) {
+            Pixel_Right_Ysite = Right_Ysite + Right_Rule[0][2 * Right_Rirection + 1];
+            Pixel_Right_Xsite = Right_Xsite + Right_Rule[0][2 * Right_Rirection];
+
+            if (imageInput[Pixel_Right_Ysite][Pixel_Right_Xsite] == 0) {
+                if (Right_Rirection == 0)
+                    Right_Rirection = 3;
+                else
+                    Right_Rirection--;
+            }
+            else {
+                Pixel_Right_Ysite = Right_Ysite + Right_Rule[1][2 * Right_Rirection + 1];
+                Pixel_Right_Xsite = Right_Xsite + Right_Rule[1][2 * Right_Rirection];
+
+                if (imageInput[Pixel_Right_Ysite][Pixel_Right_Xsite] == 0) {
+                    Right_Ysite = Right_Ysite + Right_Rule[0][2 * Right_Rirection + 1];
+                    Right_Xsite = Right_Xsite + Right_Rule[0][2 * Right_Rirection];
+                    if (RowAttribute[Right_Ysite].RightBoundary_First == 158)  // 原 79 → 158
+                        RowAttribute[Right_Ysite].RightBoundary_First = Right_Xsite;
+                    RowAttribute[Right_Ysite].RightBoundary = Right_Xsite;
+                }
+                else {
+                    Right_Ysite = Right_Ysite + Right_Rule[1][2 * Right_Rirection + 1];
+                    Right_Xsite = Right_Xsite + Right_Rule[1][2 * Right_Rirection];
+                    if (RowAttribute[Right_Ysite].RightBoundary_First == 158)
+                        RowAttribute[Right_Ysite].RightBoundary_First = Right_Xsite;
+                    RowAttribute[Right_Ysite].RightBoundary = Right_Xsite;
+                    if (Right_Rirection == 3)
+                        Right_Rirection = 0;
+                    else
+                        Right_Rirection++;
+                }
+            }
+        }
+
+        if (abs(Pixel_Right_Xsite - Pixel_Left_Xsite) < 6) {  // 原 3 → 6
+            ImageParameter.OFFLineBoundary = Ysite;
+            break;
+        }
+    }
+}
+
+void Search_Border_OTSU(uint8_t imageInput[IPSH][IPSW], uint8_t Row, uint8_t Col, uint8_t Bottonline) {
+    ImageParameter.WhiteLine_L = 0;
+    ImageParameter.WhiteLine_R = 0;
+    for (int Xsite = 0; Xsite < IPSW; Xsite++) {
+        imageInput[0][Xsite] = 0;
+        imageInput[Bottonline + 1][Xsite] = 0;
+    }
+    for (int Ysite = 0; Ysite < IPSH; Ysite++) {
+        RowAttribute[Ysite].LeftBoundary_First = 0;
+        RowAttribute[Ysite].RightBoundary_First = 158;  // 原 79 → 158
+        imageInput[Ysite][0] = 0;
+        imageInput[Ysite][IPSW - 1] = 0;
+    }
+    Search_Bottom_Line_OTSU(imageInput, Row, Col, Bottonline);
+    Search_Left_and_Right_Lines(imageInput, Row, Col, Bottonline);
+
+    for (int Ysite = Bottonline; Ysite > ImageParameter.OFFLineBoundary + 1; Ysite--) {
+        if (RowAttribute[Ysite].LeftBoundary < 6) {  // 原 3 → 6
+            ImageParameter.WhiteLine_L++;
+        }
+        if (RowAttribute[Ysite].RightBoundary > IPSW - 6) {  // 原 3 → 6
+            ImageParameter.WhiteLine_R++;
+        }
+    }
+}
+
+// ========================================== 寻找下拐点 ==========================================
+int Find_Down_Point(int start, int end) {
+    int i, t;
+    int Right_Down_Find = 0;
+    int Left_Down_Find = 0;
+    int l_border[IPSH], r_border[IPSH];
+
+    for (i = 0; i < IPSH; i++) {
+        l_border[i] = RowAttribute[i].LeftBorder;
+        r_border[i] = RowAttribute[i].RightBorder;
+    }
+
+    if (start < end) {
+        t = start;
+        start = end;
+        end = t;
+    }
+    if (start >= IPSH - 1 - 10)  // 原 5 → 10
+        start = IPSH - 1 - 10;
+    if (end <= IPSH - 50)  // 原 25 → 50
+        end = IPSH - 50;
+    if (end <= 10)  // 原 5 → 10
+        end = 10;
+
+    for (i = start; i >= end; i--) {
+        if (Left_Down_Find == 0 &&
+            abs(l_border[i] - l_border[i + 1]) <= 10 &&  // 原 5 → 10
+            abs(l_border[i + 1] - l_border[i + 2]) <= 10 &&
+            abs(l_border[i + 2] - l_border[i + 3]) <= 10 &&
+            (l_border[i] - l_border[i - 2]) >= 16 &&      // 原 8 → 16
+            (l_border[i] - l_border[i - 3]) >= 30 &&      // 原 15 → 30
+            (l_border[i] - l_border[i - 4]) >= 30) {
+            Left_Down_Find = i;
+        }
+        if (Right_Down_Find == 0 &&
+            abs(r_border[i] - r_border[i + 1]) <= 10 &&
+            abs(r_border[i + 1] - r_border[i + 2]) <= 10 &&
+            abs(r_border[i + 2] - r_border[i + 3]) <= 10 &&
+            (r_border[i] - r_border[i - 2]) <= -16 &&
+            (r_border[i] - r_border[i - 3]) <= -30 &&
+            (r_border[i] - r_border[i - 4]) <= -30) {
+            Right_Down_Find = i;
+        }
+        if (Left_Down_Find != 0 && Right_Down_Find != 0) {
+            break;
+        }
+    }
+    if (Left_Down_Find != 0 && Right_Down_Find != 0) {
+        return 1;
+    }
+    else return 0;
+}
+
+// ========================================== 十字补线 ==========================================
+void Get_ExtensionLine(void) {
+    int Ysite = 110;  // 原 55 → 110
+    float D_R = 0;
+    float D_L = 0;
+    int ytemp = 0;
+    int WhiteLine = 0;
+    int l_LostLine = 0, r_LostLine = 0;
+    int OFFLine = ImageParameter.OFFLine;
+    int MinLeftBd = 2;    // 原 1 → 2
+    int MinRightBd = 157; // 原 78 → 157
+
+    for (int y = 40; y < 110; y++) {  // 原 20→55 → 40→110
+        if (RowAttribute[y].IsLeftFind == 'W') l_LostLine++;
+        if (RowAttribute[y].IsRightFind == 'W') r_LostLine++;
+    }
+
+    if (l_LostLine < r_LostLine) WhiteLine = l_LostLine;
+    else WhiteLine = r_LostLine;
+
+    if (WhiteLine > 5) {
+        /********************************* 左边补线 *********************************/
+        left_FTSite = 0;
+        TFSite = 110;
+        for (Ysite = 100; Ysite >= (OFFLine + 4); Ysite--) {  // 原 50 → 100
+            if (RowAttribute[Ysite].IsLeftFind == 'W') {
+                while (Ysite >= (OFFLine + 4)) {
+                    Ysite--;
+                    if (RowAttribute[Ysite - 2].IsLeftFind == 'T' &&
+                        RowAttribute[Ysite - 2].LeftBorder > 50 &&
+                        RowAttribute[Ysite - 2].LeftBorder < 130) {
+                        left_FTSite = Ysite - 2;
+                        break;
+                    }
+                }
+                D_L = (float)(RowAttribute[left_FTSite].LeftBorder - RowAttribute[TFSite].LeftBorder)
+                    / ((float)(left_FTSite - TFSite));
+                if (left_FTSite > OFFLine)
+                    for (ytemp = TFSite; ytemp >= left_FTSite; ytemp--) {
+                        RowAttribute[ytemp].LeftBorder = (int)(D_L * ((float)(ytemp - TFSite))) + RowAttribute[TFSite].LeftBorder;
+                    }
+            }
+            else {
+                TFSite = Ysite + 2;
+            }
+        }
+
+        /********************************* 右边补线 *********************************/
+        right_FTSite = 0;
+        TFSite = 110;
+        for (Ysite = 100; Ysite >= (OFFLine + 4); Ysite--) {
+            if (RowAttribute[Ysite].IsRightFind == 'W') {
+                while (Ysite >= (OFFLine + 4)) {
+                    Ysite--;
+                    if (RowAttribute[Ysite - 2].IsRightFind == 'T' &&
+                        RowAttribute[Ysite - 2].RightBorder > 50 &&
+                        RowAttribute[Ysite - 2].RightBorder < 150) {
+                        right_FTSite = Ysite - 2;
+                        break;
+                    }
+                }
+                D_R = (float)(RowAttribute[right_FTSite].RightBorder - RowAttribute[TFSite].RightBorder)
+                    / ((float)(right_FTSite - TFSite));
+                if (right_FTSite > OFFLine)
+                    for (ytemp = TFSite; ytemp >= right_FTSite; ytemp--) {
+                        RowAttribute[ytemp].RightBorder = (int)(D_R * ((float)(ytemp - TFSite))) + RowAttribute[TFSite].RightBorder;
+                    }
+            }
+            else
+                TFSite = Ysite + 2;
+        }
+
+        // 重新计算中线和宽度
+        for (int y = OFFLine; y <= 119; y++) {
+            if (RowAttribute[y].LeftBorder >= 0 && RowAttribute[y].LeftBorder < IPSW &&
+                RowAttribute[y].RightBorder >= 0 && RowAttribute[y].RightBorder < IPSW) {
+                RowAttribute[y].Center = (RowAttribute[y].LeftBorder + RowAttribute[y].RightBorder) / 2;
+                RowAttribute[y].Wide = RowAttribute[y].RightBorder - RowAttribute[y].LeftBorder;
+                if (RowAttribute[y].IsLeftFind == 'W' && RowAttribute[y].LeftBorder > MinLeftBd) {
+                    RowAttribute[y].IsLeftFind = 'T';
+                }
+                if (RowAttribute[y].IsRightFind == 'W' && RowAttribute[y].RightBorder < MinRightBd) {
+                    RowAttribute[y].IsRightFind = 'T';
+                }
+            }
+        }
+    }
+}
+
+// ========================================== 十字检测处理 ==========================================
+void element_I() {
+    int l_LostLine = 0, r_LostLine = 0;
+    int zong_sign = 0;
+
+    for (int y = 40; y < 110; y++) {  // 原 20→55 → 40→110
+        if (RowAttribute[y].IsLeftFind == 'W') l_LostLine++;
+        if (RowAttribute[y].IsRightFind == 'W') r_LostLine++;
+    }
+
+    if (l_LostLine > 4 && r_LostLine > 4 && zong_sign == 0) {
+        Get_ExtensionLine();
+    }
+}
+
+// ========================================== 中线平滑滤波 ==========================================
+void RouteFilter(void) {
+    for (Ysite = 116; Ysite >= (ImageParameter.OFFLine + 5); Ysite--) {  // 原 58 → 116
+        if (RowAttribute[Ysite].IsLeftFind == 'W'
+            && RowAttribute[Ysite].IsRightFind == 'W'
+            && Ysite <= 90  // 原 45 → 90
+            && RowAttribute[Ysite - 1].IsLeftFind == 'W'
+            && RowAttribute[Ysite - 1].IsRightFind == 'W') {
+            ytemp = Ysite;
+            while (ytemp >= (ImageParameter.OFFLine + 5)) {
+                ytemp--;
+                if (RowAttribute[ytemp].IsLeftFind == 'T' && Xsite >= 40 && Xsite <= 80) {
+                    if (RowAttribute[ytemp].IsRightFind == 'T' && Xsite >= 80 && Xsite <= 120) {
+                        DetR = (float)(RowAttribute[ytemp - 1].Center - RowAttribute[Ysite + 2].Center)
+                            / (float)(ytemp - 1 - Ysite - 2);
+                        int CenterTemp = RowAttribute[Ysite + 2].Center;
+                        int LineTemp = Ysite + 2;
+                        while (Ysite >= ytemp) {
+                            RowAttribute[Ysite].Center = (int)(CenterTemp + DetR * (float)(Ysite - LineTemp));
+                            Ysite--;
+                        }
+                    }
+                }
+            }
+        }
+        RowAttribute[Ysite].Center =
+            (RowAttribute[Ysite - 1].Center + 2 * RowAttribute[Ysite].Center) / 3;
+    }
+}
+
+// ========================================== 直道加速检测 ==========================================
+void Straightacc_Test(void) {
+    int sum = 0;
+    for (Ysite = 110; Ysite > ImageParameter.OFFLine + 1; Ysite--) {  // 原 55 → 110
+        sum += (RowAttribute[Ysite].Center - PictureCentring) * (RowAttribute[Ysite].Center - PictureCentring);
+    }
+    variance_acc = (float)sum / (109 - ImageParameter.OFFLine);  // 原 54 → 109
+    if (variance_acc < ImageParameter.variance_acc && ImageParameter.OFFLine <= 30) {  // 原 15 → 30
+        ImageParameter.straight_acc = 1;
+    }
+    else
+        ImageParameter.straight_acc = 0;
+}
+
+// ========================================== 动态前瞻 ==========================================
+void Update_Dynamic_Lookahead(void) {
+    ImageParameter.TowPoint = 20;  // 固定前瞻 (原值, 可调)
+}
+
+// ========================================== 直线判断 ==========================================
+float Straight_Judge(uint8_t dir, uint8_t start, uint8_t end) {
+    int i;
+    float S = 0, Sum = 0, Err = 0, k = 0;
+    switch (dir) {
+    case 1:
+        k = (float)(RowAttribute[start].LeftBorder - RowAttribute[end].LeftBorder) / (start - end);
+        for (i = 0; i < end - start; i++) {
+            Err = (RowAttribute[start].LeftBorder + k * i - RowAttribute[i + start].LeftBorder) *
+                (RowAttribute[start].LeftBorder + k * i - RowAttribute[i + start].LeftBorder);
+            Sum += Err;
+        }
+        S = Sum / (end - start);
+        break;
+    case 2:
+        k = (float)(RowAttribute[start].RightBorder - RowAttribute[end].RightBorder) / (start - end);
+        for (i = 0; i < end - start; i++) {
+            Err = (RowAttribute[start].RightBorder + k * i - RowAttribute[i + start].RightBorder) *
+                (RowAttribute[start].RightBorder + k * i - RowAttribute[i + start].RightBorder);
+            Sum += Err;
+        }
+        S = Sum / (end - start);
+        break;
+    }
+    return S;
+}
+
+// ========================================== 二值图像滤波 ==========================================
+void Bin_Image_Filter(void) {
+    uint16_t nr;
+    uint16_t nc;
+    for (nr = 1; nr < IPSH - 1; nr++) {
+        for (nc = 1; nc < IPSW - 1; nc = nc + 1) {
+            if ((heheImage[nr][nc] == 0)
+                && (heheImage[nr - 1][nc] + heheImage[nr + 1][nc]
+                    + heheImage[nr][nc + 1] + heheImage[nr][nc - 1] > 2)) {
+                heheImage[nr][nc] = 1;
+            }
+            else if ((heheImage[nr][nc] == 1)
+                && (heheImage[nr - 1][nc] + heheImage[nr + 1][nc]
+                    + heheImage[nr][nc + 1] + heheImage[nr][nc - 1] < 2)) {
+                heheImage[nr][nc] = 0;
+            }
+        }
+    }
+}
+
+// ========================================== 速度控制因子 ==========================================
+void Speed_Control_Factor(void) {
+    float SpeedGain = 0;
+    SpeedGain = (SystemData.SpeedData.nowspeed - SystemData.SpeedData.MinSpeed) * 0.2 + 0.5;
+    if (SpeedGain >= 3) SpeedGain = 3;
+    else if (SpeedGain <= -1) SpeedGain = -1;
+}
+
+// ========================================== 左圆环检测 ==========================================
+void Element_Judgment_Left_Rings() {
+    if (ImageParameter.WhiteLine_R > 12     // 原 6 → 12
+        || ImageParameter.WhiteLine_L < 4   // 原 2 → 4
+        || ImageParameter.OFFLine > 40      // 原 20 → 40
+        || Straight_Judge(1, 10, 110) > 2   // 原 5,55 → 10,110
+        || ImageParameter.WhiteLine > 12    // 原 6 → 12
+        || RowAttribute[108].IsLeftFind == 'W'     // 原 54 → 108
+        || RowAttribute[110].IsLeftFind == 'W'     // 原 55 → 110
+        || RowAttribute[112].IsLeftFind == 'W'     // 原 56 → 112
+        || RowAttribute[114].IsLeftFind == 'W')    // 原 57 → 114
+        return;
+
+    int ring_ysite = 50;  // 原 25 → 50
+    uint8_t Left_Less_Num = 0;
+    Left_RingsFlag_Point1_Ysite = 0;
+    Left_RingsFlag_Point2_Ysite = 0;
+    for (int Ysite = 116; Ysite > ring_ysite; Ysite--) {  // 原 58 → 116
+        if (RowAttribute[Ysite].LeftBoundary_First - RowAttribute[Ysite - 1].LeftBoundary_First > 6) {  // 原 3 → 6
+            Left_RingsFlag_Point1_Ysite = Ysite;
+            break;
+        }
+    }
+    for (int Ysite = 116; Ysite > ring_ysite; Ysite--) {
+        if (RowAttribute[Ysite + 1].LeftBoundary - RowAttribute[Ysite].LeftBoundary > 6) {
+            Left_RingsFlag_Point2_Ysite = Ysite;
+            break;
+        }
+    }
+    for (int Ysite = Left_RingsFlag_Point1_Ysite; Ysite > Left_RingsFlag_Point1_Ysite - 22; Ysite--) {  // 原 11 → 22
+        if (Ysite <= 0) break;
+        if (RowAttribute[Ysite].IsLeftFind == 'W')
+            Left_Less_Num++;
+    }
+    for (int Ysite = Left_RingsFlag_Point1_Ysite; Ysite > ImageParameter.OFFLine; Ysite--) {
+        if (RowAttribute[Ysite + 12].LeftBorder < RowAttribute[Ysite + 6].LeftBorder
+            && RowAttribute[Ysite + 10].LeftBorder < RowAttribute[Ysite + 6].LeftBorder
+            && RowAttribute[Ysite + 6].LeftBorder > RowAttribute[Ysite + 4].LeftBorder
+            && RowAttribute[Ysite + 6].LeftBorder > RowAttribute[Ysite + 2].LeftBorder) {
+            Ring_Help_Flag = 1;
+            break;
+        }
+    }
+    if (Left_RingsFlag_Point2_Ysite > Left_RingsFlag_Point1_Ysite + 2 && Ring_Help_Flag == 0) {  // 原 +1 → +2
+        if (ImageParameter.Miss_Left_lines > 20)  // 原 10 → 20
+            Ring_Help_Flag = 1;
+    }
+    if (Left_RingsFlag_Point2_Ysite > Left_RingsFlag_Point1_Ysite + 2) {
+        ImageParameter.image_element_rings = 1;
+        ImageParameter.image_element_rings_flag = 1;
+        ImageParameter.ring_big_small = 1;
+        cout << "left ring detected" << endl;
+    }
+    Ring_Help_Flag = 0;
+}
+
+// ========================================== 右圆环检测 ==========================================
+void Element_Judgment_Right_Rings() {
+    if (ImageParameter.WhiteLine_L > 6       // 原 3 → 6
+        || ImageParameter.WhiteLine_R < 10   // 原 5 → 10
+        || ImageParameter.OFFLine > 60       // 原 30 → 60
+        || Straight_Judge(1, 30, 100) > 1    // 原 15,50 → 30,100
+        || RowAttribute[108].IsRightFind == 'W'    // 原 54 → 108
+        || RowAttribute[110].IsRightFind == 'W'    // 原 55 → 110
+        || RowAttribute[112].IsRightFind == 'W'    // 原 56 → 112
+        || RowAttribute[114].IsRightFind == 'W')   // 原 57 → 114
+        return;
+
+    int ring_ysite = 50;  // 原 25 → 50
+    uint8_t Right_Less_Num = 0;
+    Right_RingsFlag_Point1_Ysite = 0;
+    Right_RingsFlag_Point2_Ysite = 0;
+
+    for (int Ysite = 116; Ysite > ring_ysite; Ysite--) {
+        if (RowAttribute[Ysite - 1].RightBoundary_First - RowAttribute[Ysite].RightBoundary_First > 6) {
+            Right_RingsFlag_Point1_Ysite = Ysite;
+            break;
+        }
+    }
+    for (int Ysite = 116; Ysite > ring_ysite; Ysite--) {
+        if (RowAttribute[Ysite].RightBoundary - RowAttribute[Ysite + 1].RightBoundary > 6) {
+            Right_RingsFlag_Point2_Ysite = Ysite;
+            break;
+        }
+    }
+    for (int Ysite = Right_RingsFlag_Point1_Ysite; Ysite > Right_RingsFlag_Point1_Ysite - 22; Ysite--) {
+        if (Ysite <= 0) break;
+        if (RowAttribute[Ysite].IsRightFind == 'W')
+            Right_Less_Num++;
+    }
+    for (int Ysite = Right_RingsFlag_Point1_Ysite; Ysite > ImageParameter.OFFLine; Ysite--) {
+        if (RowAttribute[Ysite + 12].RightBorder > RowAttribute[Ysite + 6].RightBorder
+            && RowAttribute[Ysite + 10].RightBorder > RowAttribute[Ysite + 6].RightBorder
+            && RowAttribute[Ysite + 6].RightBorder < RowAttribute[Ysite + 4].RightBorder
+            && RowAttribute[Ysite + 6].RightBorder < RowAttribute[Ysite + 2].RightBorder) {
+            Ring_Help_Flag = 1;
+            break;
+        }
+    }
+    if (Right_RingsFlag_Point2_Ysite > Right_RingsFlag_Point1_Ysite + 2 && Ring_Help_Flag == 0) {
+        if (ImageParameter.Miss_Right_lines > 20)
+            Ring_Help_Flag = 1;
+    }
+    if (Right_RingsFlag_Point2_Ysite > Right_RingsFlag_Point1_Ysite + 2) {
+        ImageParameter.image_element_rings = 2;
+        ImageParameter.image_element_rings_flag = 1;
+        ImageParameter.ring_big_small = 1;
+        cout << "right ring detected" << endl;
+    }
+    Ring_Help_Flag = 0;
+}
+
+// ========================================== 左圆环处理 ==========================================
+void Element_Handle_Left_Rings() {
+    int num = 0;
+    for (int Ysite = 110; Ysite > 48; Ysite--) {  // 原 55→24 → 110→48
+        if (RowAttribute[Ysite].IsLeftFind == 'W') num++;
+        if (RowAttribute[Ysite + 6].IsLeftFind == 'W' && RowAttribute[Ysite + 4].IsLeftFind == 'W'
+            && RowAttribute[Ysite + 2].IsLeftFind == 'W' && RowAttribute[Ysite].IsLeftFind == 'T')
+            break;
+    }
+    // flag1→2: 准备进环
+    if (ImageParameter.image_element_rings_flag == 1 && num > 40) {  // 原 20 → 40
+        ImageParameter.image_element_rings_flag = 2;
+    }
+    // flag2→5: 进入圆环
+    if (ImageParameter.image_element_rings_flag == 2 && num < 20) {  // 原 10 → 20
+        ImageParameter.image_element_rings_flag = 5;
+    }
+    // flag5→6: 进环中
+    if (ImageParameter.image_element_rings_flag == 5 && ImageParameter.WhiteLine_R > 32) {  // 原 16 → 32
+        ImageParameter.image_element_rings_flag = 6;
+    }
+    // flag6→7: 环内
+    if (ImageParameter.image_element_rings_flag == 6 && ImageParameter.WhiteLine_R < 10) {  // 原 5 → 10
+        ImageParameter.image_element_rings_flag = 7;
+    }
+    // flag7→8: 环内 → 出环 (检测右边界凸点)
+    if (ImageParameter.image_element_rings_flag == 7) {
+        Point_Ysite = 0;
+        Point_Xsite = 0;
+        for (int Ysite = 100; Ysite > ImageParameter.OFFLine + 14; Ysite--) {  // 原 50→7 → 100→14
+            if (RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite + 4].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite - 4].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite + 2].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite - 2].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite + 8].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite - 8].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite + 12].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite - 12].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite + 10].RightBorder
+                && RowAttribute[Ysite].RightBorder <= RowAttribute[Ysite - 10].RightBorder) {
+                Point_Xsite = RowAttribute[Ysite].RightBorder;
+                Point_Ysite = Ysite;
+                break;
+            }
+        }
+        if (Point_Ysite > 44) {  // 原 22 → 44
+            ImageParameter.image_element_rings_flag = 8;
+        }
+    }
+    // flag8→9: 出环后
+    if (ImageParameter.image_element_rings_flag == 8) {
+        if (Straight_Judge(2, ImageParameter.OFFLine + 36, 100) < 1  // 原 18,50 → 36,100
+            && ImageParameter.WhiteLine_R < 28                       // 原 14 → 28
+            && ImageParameter.OFFLine < 24) {                        // 原 12 → 24
+            ImageParameter.image_element_rings_flag = 9;
+        }
+    }
+    // flag9→0: 结束圆环
+    if (ImageParameter.image_element_rings_flag == 9) {
+        int num = 0;
+        for (int Ysite = 110; Ysite > 20; Ysite--) {  // 原 55→10 → 110→20
+            if (RowAttribute[Ysite].IsLeftFind == 'W') num++;
+        }
+        if (num < 16) {  // 原 8 → 16
+            ImageParameter.image_element_rings_flag = 0;
+            ImageParameter.image_element_rings = 0;
+            ImageParameter.ring_big_small = 0;
+        }
+    }
+
+    printf("L_flag:%d num:%d\n", ImageParameter.image_element_rings_flag, num);
+
+    /*************************************** 左环岛处理 **************************************/
+    // flag 1-4: 半宽处理
+    if (ImageParameter.image_element_rings_flag >= 1
+        && ImageParameter.image_element_rings_flag <= 4) {
+        for (int Ysite = 119; Ysite > ImageParameter.OFFLine; Ysite--) {
+            RowAttribute[Ysite].Center = RowAttribute[Ysite].RightBorder - Half_Road_Wide[Ysite];
+        }
+    }
+    // flag 5-6: 进环补线
+    if (ImageParameter.image_element_rings_flag == 5
+        || ImageParameter.image_element_rings_flag == 6) {
+        int flag_Xsite_1 = 0;
+        int flag_Ysite_1 = 0;
+        float Slope_Rings = 0;
+        for (Ysite = 110; Ysite > ImageParameter.OFFLine; Ysite--) {  // 原 55 → 110
+            for (Xsite = RowAttribute[Ysite].LeftBorder + 1; Xsite < RowAttribute[Ysite].RightBorder - 1; Xsite++) {
+                if (heheImage[Ysite][Xsite] == 1 && heheImage[Ysite][Xsite + 1] == 0) {
+                    flag_Ysite_1 = Ysite;
+                    flag_Xsite_1 = Xsite;
+                    Slope_Rings = (float)(220 - flag_Xsite_1) / (float)(119 - flag_Ysite_1);  // 原 110→220, 59→119
+                    break;
+                }
+            }
+            if (flag_Ysite_1 != 0) break;
+        }
+        if (flag_Ysite_1 == 0) {
+            for (Ysite = ImageParameter.OFFLine + 1; Ysite < 60; Ysite++) {  // 原 30 → 60
+                if (RowAttribute[Ysite].IsLeftFind == 'T' && RowAttribute[Ysite + 1].IsLeftFind == 'T'
+                    && RowAttribute[Ysite + 2].IsLeftFind == 'W'
+                    && abs(RowAttribute[Ysite].LeftBorder - RowAttribute[Ysite + 2].LeftBorder) > 20) {
+                    flag_Ysite_1 = Ysite;
+                    flag_Xsite_1 = RowAttribute[flag_Ysite_1].LeftBorder;
+                    ImageParameter.OFFLine = (uint8_t)Ysite;
+                    Slope_Rings = (float)(220 - flag_Xsite_1) / (float)(119 - flag_Ysite_1);
+                    break;
+                }
+            }
+        }
+        if (flag_Ysite_1 != 0) {
+            int bottom_x = 0;
+            for (int x = 159; x > 0; x--) {
+                if (heheImage[119][x] == 0 && heheImage[119][x - 1] == 1) {
+                    bottom_x = x;
+                    break;
+                }
+            }
+            if (bottom_x > 0) {
+                Slope_Rings = (float)(bottom_x - flag_Xsite_1) / (float)(119 - flag_Ysite_1);
+            }
+            else {
+                Slope_Rings = (float)(220 - flag_Xsite_1) / (float)(119 - flag_Ysite_1);
+            }
+            for (Ysite = flag_Ysite_1; Ysite < IPSH; Ysite++) {
+                RowAttribute[Ysite].RightBorder = flag_Xsite_1 + Slope_Rings * (Ysite - flag_Ysite_1);
+                RowAttribute[Ysite].Center = (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+            }
+            RowAttribute[flag_Ysite_1].RightBorder = flag_Xsite_1;
+            for (Ysite = flag_Ysite_1 - 1; Ysite > 20; Ysite--) {  // 原 10 → 20
+                for (Xsite = RowAttribute[Ysite + 1].RightBorder - 20; Xsite < RowAttribute[Ysite + 1].RightBorder + 4; Xsite++) {
+                    if (heheImage[Ysite][Xsite] == 1 && heheImage[Ysite][Xsite + 1] == 0) {
+                        RowAttribute[Ysite].RightBorder = Xsite;
+                        RowAttribute[Ysite].Center = (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+                        RowAttribute[Ysite].Wide = RowAttribute[Ysite].RightBorder - RowAttribute[Ysite].LeftBorder;
+                        break;
+                    }
+                }
+                if (RowAttribute[Ysite].Wide > 16 && RowAttribute[Ysite].RightBorder < RowAttribute[Ysite + 4].RightBorder) {
+                    continue;
+                }
+                else {
+                    ImageParameter.OFFLine = Ysite + 2;
+                    break;
+                }
+            }
+        }
+    }
+    // flag 7: 环内不额外处理
+    // flag 8: 大圆环出环补线
+    if (ImageParameter.image_element_rings_flag == 8 && ImageParameter.ring_big_small == 1) {
+        Repair_Point_Xsite = 40;  // 原 20 → 40
+        Repair_Point_Ysite = 10;  // 原 5 → 10
+        for (int Ysite = 100; Ysite > 10; Ysite--) {
+            if (heheImage[Ysite][64] == 1 && heheImage[Ysite - 1][64] == 0) {  // 原 32 → 64
+                Repair_Point_Xsite = 64;
+                Repair_Point_Ysite = Ysite - 1;
+                ImageParameter.OFFLine = Ysite + 1;
+                break;
+            }
+        }
+        for (int Ysite = 110; Ysite > Repair_Point_Ysite - 6; Ysite--) {
+            RowAttribute[Ysite].RightBorder = (RowAttribute[116].RightBorder - Repair_Point_Xsite) * (Ysite - 116) / (116 - Repair_Point_Ysite) + RowAttribute[116].RightBorder;
+            RowAttribute[Ysite].Center = (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+        }
+    }
+    // flag 8: 小圆环出环补线
+    if (ImageParameter.image_element_rings_flag == 8 && ImageParameter.ring_big_small == 2) {
+        Repair_Point_Xsite = 0;
+        Repair_Point_Ysite = 0;
+        for (int Ysite = 110; Ysite > 10; Ysite--) {
+            if (heheImage[Ysite][30] == 1 && heheImage[Ysite - 1][30] == 0) {  // 原 15 → 30
+                Repair_Point_Xsite = 30;
+                Repair_Point_Ysite = Ysite - 1;
+                ImageParameter.OFFLine = Ysite + 1;
+                break;
+            }
+        }
+        for (int Ysite = 110; Ysite > Repair_Point_Ysite - 6; Ysite--) {
+            RowAttribute[Ysite].RightBorder = (RowAttribute[116].RightBorder - Repair_Point_Xsite) * (Ysite - 116) / (116 - Repair_Point_Ysite) + RowAttribute[116].RightBorder;
+            RowAttribute[Ysite].Center = (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+        }
+    }
+    // flag 9-10: 已出环半宽处理
+    if (ImageParameter.image_element_rings_flag == 9 || ImageParameter.image_element_rings_flag == 10) {
+        for (int Ysite = 119; Ysite > ImageParameter.OFFLine; Ysite--) {
+            RowAttribute[Ysite].Center = RowAttribute[Ysite].RightBorder - Half_Road_Wide[Ysite];
+        }
+    }
+}
+
+// ========================================== 右圆环处理 ==========================================
+void Element_Handle_Right_Rings() {
+    int num = 0;
+    for (int Ysite = 110; Ysite > 48; Ysite--) {
+        if (RowAttribute[Ysite].IsRightFind == 'W') num++;
+        if (RowAttribute[Ysite + 6].IsRightFind == 'W' && RowAttribute[Ysite + 4].IsRightFind == 'W'
+            && RowAttribute[Ysite + 2].IsRightFind == 'W' && RowAttribute[Ysite].IsRightFind == 'T')
+            break;
+    }
+    if (ImageParameter.image_element_rings_flag == 1 && num > 40) {
+        ImageParameter.image_element_rings_flag = 2;
+    }
+    if (ImageParameter.image_element_rings_flag == 2 && num < 40) {  // 原 20 → 40
+        ImageParameter.image_element_rings_flag = 5;
+    }
+    if (ImageParameter.image_element_rings_flag == 5 && ImageParameter.WhiteLine_L > 32) {
+        ImageParameter.image_element_rings_flag = 6;
+    }
+    if (ImageParameter.image_element_rings_flag == 6 && ImageParameter.WhiteLine_L < 10) {
+        ImageParameter.image_element_rings_flag = 7;
+    }
+    // flag7→8: 环内 → 出环
+    if (ImageParameter.image_element_rings_flag == 7) {
+        Point_Xsite = 0;
+        Point_Ysite = 0;
+        for (int Ysite = 90; Ysite > ImageParameter.OFFLine + 14; Ysite--) {  // 原 45 → 90
+            if (RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite + 4].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite - 4].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite + 2].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite - 2].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite + 8].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite - 8].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite + 10].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite - 10].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite + 12].LeftBorder
+                && RowAttribute[Ysite].LeftBorder >= RowAttribute[Ysite - 12].LeftBorder) {
+                Point_Xsite = RowAttribute[Ysite].LeftBorder;
+                Point_Ysite = Ysite;
+                break;
+            }
+        }
+        if (Point_Ysite > 44) {
+            ImageParameter.image_element_rings_flag = 8;
+        }
+    }
+    if (ImageParameter.image_element_rings_flag == 8) {
+        if (ImageParameter.WhiteLine_R < 24        // 原 12 → 24
+            && ImageParameter.OFFLine < 36) {      // 原 18 → 36
+            ImageParameter.image_element_rings_flag = 9;
+        }
+    }
+    if (ImageParameter.image_element_rings_flag == 9) {
+        int num = 0;
+        for (int Ysite = 90; Ysite > 20; Ysite--) {  // 原 45→10 → 90→20
+            if (RowAttribute[Ysite].IsRightFind == 'W') num++;
+        }
+        if (num < 16) {
+            ImageParameter.image_element_rings_flag = 0;
+            ImageParameter.image_element_rings = 0;
+            ImageParameter.ring_big_small = 0;
+        }
+    }
+    printf("R_flag:%d num:%d Det=%d\n", ImageParameter.image_element_rings_flag, num, ImageParameter.Det_True);
+
+    /*************************************** 右环岛处理 **************************************/
+    if (ImageParameter.image_element_rings_flag >= 1
+        && ImageParameter.image_element_rings_flag <= 4) {
+        for (int Ysite = 119; Ysite > ImageParameter.OFFLine; Ysite--) {
+            RowAttribute[Ysite].Center = RowAttribute[Ysite].LeftBorder + Half_Road_Wide[Ysite];
+        }
+    }
+    // flag 5-6: 进环补线
+    if (ImageParameter.image_element_rings_flag == 5 || ImageParameter.image_element_rings_flag == 6) {
+        int flag_Xsite_1 = 0;
+        int flag_Ysite_1 = 0;
+        float Slope_Right_Rings = 0;
+        for (Ysite = 100; Ysite > ImageParameter.OFFLine; Ysite--) {
+            for (Xsite = RowAttribute[Ysite].LeftBorder + 1; Xsite < RowAttribute[Ysite].RightBorder - 1; Xsite++) {
+                if (heheImage[Ysite][Xsite] == 1 && heheImage[Ysite][Xsite + 1] == 0) {
+                    flag_Ysite_1 = Ysite;
+                    flag_Xsite_1 = Xsite;
+                    break;
+                }
+            }
+            if (flag_Ysite_1 != 0) break;
+        }
+        if (flag_Ysite_1 == 0) {
+            for (Ysite = ImageParameter.OFFLine + 1; Ysite < 60; Ysite++) {
+                if (RowAttribute[Ysite].IsRightFind == 'T' && RowAttribute[Ysite + 1].IsRightFind == 'T'
+                    && RowAttribute[Ysite + 2].IsRightFind == 'W'
+                    && abs(RowAttribute[Ysite].RightBorder - RowAttribute[Ysite + 2].RightBorder) > 20) {
+                    flag_Ysite_1 = Ysite;
+                    flag_Xsite_1 = RowAttribute[flag_Ysite_1].RightBorder;
+                    ImageParameter.OFFLine = (uint8_t)Ysite;
+                    break;
+                }
+            }
+        }
+        int bottom_x = 144;  // 原 72 → 144
+        for (int x = 0; x < 144; x++) {
+            if (heheImage[110][x] == 0 && heheImage[110][x + 1] == 1) {  // 原 55 → 110
+                bottom_x = x;
+                break;
+            }
+        }
+        if (flag_Ysite_1 != 0 && bottom_x < 158) {
+            Slope_Right_Rings = (float)(bottom_x - flag_Xsite_1) / (float)(119 - flag_Ysite_1);
+        }
+        if (flag_Ysite_1 != 0) {
+            for (Ysite = flag_Ysite_1; Ysite < IPSH; Ysite++) {
+                RowAttribute[Ysite].LeftBorder = flag_Xsite_1 + Slope_Right_Rings * (Ysite - flag_Ysite_1);
+                RowAttribute[Ysite].Center = (RowAttribute[Ysite].LeftBorder + RowAttribute[Ysite].RightBorder) / 2;
+            }
+            RowAttribute[flag_Ysite_1].LeftBorder = flag_Xsite_1;
+            for (Ysite = flag_Ysite_1 - 1; Ysite > 20; Ysite--) {
+                for (Xsite = RowAttribute[Ysite + 1].LeftBorder + 16; Xsite > RowAttribute[Ysite + 1].LeftBorder - 8; Xsite--) {
+                    if (heheImage[Ysite][Xsite] == 1 && heheImage[Ysite][Xsite - 1] == 0) {
+                        RowAttribute[Ysite].LeftBorder = Xsite;
+                        RowAttribute[Ysite].Wide = RowAttribute[Ysite].RightBorder - RowAttribute[Ysite].LeftBorder;
+                        RowAttribute[Ysite].Center = (RowAttribute[Ysite].LeftBorder + RowAttribute[Ysite].RightBorder) / 2;
+                        break;
+                    }
+                }
+                if (RowAttribute[Ysite].Wide > 16 && RowAttribute[Ysite].LeftBorder > RowAttribute[Ysite + 4].LeftBorder) {
+                    continue;
+                }
+                else {
+                    ImageParameter.OFFLine = Ysite + 2;
+                    break;
+                }
+            }
+        }
+    }
+    // flag 8: 大圆环出环补线
+    if (ImageParameter.image_element_rings_flag == 8 && ImageParameter.ring_big_small == 1) {
+        Repair_Point_Xsite = 80;  // 原 40 → 80
+        Repair_Point_Ysite = 0;
+        for (int Ysite = 100; Ysite > 10; Ysite--) {
+            if (heheImage[Ysite][80] == 1 && heheImage[Ysite - 1][80] == 0) {
+                Repair_Point_Xsite = 80;
+                Repair_Point_Ysite = Ysite - 1;
+                ImageParameter.OFFLine = Ysite + 1;
+                break;
+            }
+        }
+        for (int Ysite = 114; Ysite > Repair_Point_Ysite - 6; Ysite--) {
+            RowAttribute[Ysite].LeftBorder = (RowAttribute[116].LeftBorder - Repair_Point_Xsite) * (Ysite - 116) / (116 - Repair_Point_Ysite) + RowAttribute[116].LeftBorder;
+            RowAttribute[Ysite].Center = (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+        }
+    }
+    // flag 8: 小圆环出环补线
+    if (ImageParameter.image_element_rings_flag == 8 && ImageParameter.ring_big_small == 2) {
+        Repair_Point_Xsite = 100;  // 原 50 → 100 (曾为 65→130)
+        Repair_Point_Ysite = 0;
+        for (int Ysite = 80; Ysite > 10; Ysite--) {
+            if (heheImage[Ysite][116] == 1 && heheImage[Ysite - 1][116] == 0) {  // 原 58 → 116
+                Repair_Point_Xsite = 100;
+                Repair_Point_Ysite = Ysite - 1;
+                ImageParameter.OFFLine = Ysite + 1;
+                break;
+            }
+        }
+        for (int Ysite = 110; Ysite > Repair_Point_Ysite - 6; Ysite--) {
+            RowAttribute[Ysite].LeftBorder = (RowAttribute[116].LeftBorder - Repair_Point_Xsite) * (Ysite - 116) / (116 - Repair_Point_Ysite) + RowAttribute[116].LeftBorder;
+            RowAttribute[Ysite].Center = (RowAttribute[Ysite].RightBorder + RowAttribute[Ysite].LeftBorder) / 2;
+        }
+    }
+    // flag 9-10: 已出环半宽处理
+    if (ImageParameter.image_element_rings_flag == 9 || ImageParameter.image_element_rings_flag == 10) {
+        for (int Ysite = 119; Ysite > ImageParameter.OFFLine; Ysite--) {
+            RowAttribute[Ysite].Center = RowAttribute[Ysite].LeftBorder + Half_Road_Wide[Ysite];
+        }
+    }
+}
+
+// ========================================== 斑马线判断 (圈数计数+入库) ==========================================
+void Element_Judgment_Zebra() {
+    const int TARGET_LAPS = 2;
+    const uint32_t LOCK_MS = 8000;
+
+    static uint8_t inited = 0;
+    static int lap_count = 0;
+    static uint32_t last_lap_time = 0;
+    static uint8_t zebra_pending = 0;
+    static uint32_t zebra_time = 0;
+
+    extern bool car_started;
+
+    if (!car_started) return;
+    if (!inited) { last_lap_time = Get_Time_Ms(); inited = 1; }
+
+    if (zebra_pending) {
+        if (Get_Time_Ms() - zebra_time >= 1000) {
+            SystemData.Stop = 1;  // 入库停车
+            zebra_pending = 0;
+        }
         return;
     }
-    
-    // 计算透视映射
-    for (int y = 0; y < IMG_H; y++) {
-        for (int x = 0; x < IMG_W; x++) {   
-            float U = M.at<float>(0, 0) * x + M.at<float>(0, 1) * y + M.at<float>(0, 2);
-            float V = M.at<float>(1, 0) * x + M.at<float>(1, 1) * y + M.at<float>(1, 2);
-            float W = M.at<float>(2, 0) * x + M.at<float>(2, 1) * y + M.at<float>(2, 2);
-            
-            // 避免除以零
-            if (W != 0.0f) {
-                map_x[y][x] = U / W;
-                map_y[y][x] = V / W;
+    if (SystemData.Stop) return;
+
+    if (Get_Time_Ms() - last_lap_time < LOCK_MS) return;
+
+    int NUM = 0, net = 0;
+    if (ImageParameter.OFFLineBoundary < 40) {  // 原 20 → 40
+        for (int Ysite = 80; Ysite < 106; Ysite++) {  // 原 40→53 → 80→106
+            net = 0;
+            for (int Xsite = RowAttribute[Ysite].LeftBoundary; Xsite < RowAttribute[Ysite].RightBoundary; Xsite++) {
+                if (heheImage[Ysite][Xsite] == 0 && heheImage[Ysite][Xsite + 1] == 1) {
+                    net++;
+                    if (net > 2) NUM++;
+                }
+            }
+        }
+    }
+
+    if (NUM >= 5) {
+        lap_count++;
+        last_lap_time = Get_Time_Ms();
+        cout << "lap: " << lap_count << endl;
+
+        if (lap_count >= TARGET_LAPS) {
+            zebra_pending = 1;
+            zebra_time = Get_Time_Ms();
+        }
+    }
+}
+
+// ========================================== 元素检测总入口 ==========================================
+void Element_Test(void) {
+    detect_red_color_block();
+    Straightacc_Test();
+
+    // 圆环检测条件：未在圆环状态 + 丢线不严重
+    if (ImageParameter.image_element_rings_flag == 0
+        && ImageParameter.WhiteLine < 10) {  // 原 5 → 10
+        Element_Judgment_Left_Rings();
+        Element_Judgment_Right_Rings();
+    }
+    Element_Judgment_Zebra();
+}
+
+// ========================================== 元素处理总入口 ==========================================
+void Element_Handle(void) {
+    element_I();  // 十字处理
+
+    if (ImageParameter.image_element_rings == 1)
+        Element_Handle_Left_Rings();
+    else if (ImageParameter.image_element_rings == 2)
+        Element_Handle_Right_Rings();
+
+    RouteFilter();
+    Emergency_Breaking();
+}
+
+// ========================================== 延长线绘制 ==========================================
+void DrawExtensionLine(void) {
+    if (ImageParameter.Road_type != Straight &&
+        ImageParameter.Road_type != Cross_ture &&
+        ImageParameter.Road_type != Ramp) {
+        return;
+    }
+
+    // 左边界延长
+    if (ExtenLFlag != 'F') {
+        for (Ysite = 108; Ysite >= (ImageParameter.OFFLine + 4); Ysite--) {  // 原 54 → 108
+            if (RowAttribute[Ysite].IsLeftFind == 'W') {
+                if (Ysite + 1 < IPSH && RowAttribute[Ysite + 1].LeftBorder >= 140) {  // 原 70 → 140
+                    ImageParameter.OFFLine = Ysite + 1;
+                    break;
+                }
+                int search_y = Ysite;
+                while (search_y >= (ImageParameter.OFFLine + 4)) {
+                    search_y--;
+                    if (search_y >= 2 &&
+                        RowAttribute[search_y].IsLeftFind == 'T' &&
+                        RowAttribute[search_y - 1].IsLeftFind == 'T' &&
+                        RowAttribute[search_y - 2].IsLeftFind == 'T' &&
+                        RowAttribute[search_y - 2].LeftBorder > 0 &&
+                        RowAttribute[search_y - 2].LeftBorder < 140) {
+                        left_FTSite = search_y - 2;
+                        break;
+                    }
+                }
+                if (left_FTSite > ImageParameter.OFFLine) {
+                    DetL = (float)(RowAttribute[left_FTSite].LeftBorder - RowAttribute[TFSite].LeftBorder) /
+                          (float)(left_FTSite - TFSite);
+                    for (ytemp = TFSite; ytemp >= left_FTSite; ytemp--) {
+                        RowAttribute[ytemp].LeftBorder = (int)(DetL * (ytemp - TFSite)) + RowAttribute[TFSite].LeftBorder;
+                    }
+                }
             } else {
-                map_x[y][x] = 0.0f;
-                map_y[y][x] = 0.0f;
+                TFSite = Ysite + 2;
             }
         }
     }
-    
-    // 设置四位小数精度
-    fout << std::fixed << std::setprecision(4);
-    
-    // 写入map_x
-    for (int y = 0; y < IMG_H; y++) {
-        for (int x = 0; x < IMG_W; x++) {
-            fout << map_x[y][x];
-            if (x != IMG_W - 1) fout << " ";
-        }
-        fout << std::endl;
-    }
-    
-    // 写入空行分隔
-    fout << std::endl;
-    
-    // 写入map_y
-    for (int y = 0; y < IMG_H; y++) {
-        for (int x = 0; x < IMG_W; x++) {
-            fout << map_y[y][x];
-            if (x != IMG_W - 1) fout << " ";
-        }
-        fout << std::endl;
-    }
-    
-    // 关闭文件
-    fout.close();
-    
-    // std::cout << "透视映射已保存到 maps/per_map.txt" << std::endl;
-}
 
-void load_undistort_map(void){
-    // 正式打开
-    std ::ifstream fin("maps/undistort_map.txt");
-    std ::string line;
-    int line_count = 0;
-    while (getline(fin, line) && line_count < IMG_H) {
-        if (line.empty()) break; // 空行终止读取
-        std ::istringstream iss(line); // 按空格拆分读取映射表
-        for (int x = 0; x < IMG_W; x++) iss >> undistort_map_x[line_count][x];
-        line_count++;
-    }
-    while (line.empty()) getline(fin, line);
-    line_count = 0;
-    while (getline(fin, line) && line_count < IMG_H) {
-        std ::istringstream iss(line);
-        for (int x = 0; x < IMG_W; x++) iss >> undistort_map_y[line_count][x];
-        line_count++;
-    }
-    fin.close();
-
-    ud_map_cv = Mat(IMG_H, IMG_W, CV_16SC2); 
-    int16_t* map1_ptr = (int16_t*)ud_map_cv.data; // 获取矩阵数据指针
-    // 逐像素组合map_x和map_y
-    for (int y = 0; y < IMG_H; y++) {
-        for (int x = 0; x < IMG_W; x++) {
-            int idx = y * IMG_W + x; // 一维索引
-            // 获取原始去畸变坐标
-            int16_t orig_x = undistort_map_x[y][x];
-            int16_t orig_y = undistort_map_y[y][x];
-            
-            // 对去畸变坐标翻转
-            int16_t flip_x = IMG_W - 1 - orig_x; // 左右翻转
-            int16_t flip_y = IMG_H - 1 - orig_y; // 上下翻转
-            
-            // 将翻转后的坐标写入映射表
-            map1_ptr[2*idx] = flip_x;   
-            map1_ptr[2*idx + 1] = flip_y; 
-        }
-    }
-
-    std ::cout << "-图片去畸变文件加载成功-" << std ::endl;
-}
-
-// /*******************************显示函数*********************************/
-/**
- * @brief 对点应用透视矩阵
- */
-void point_per(const cv::Mat& M, float x, float y, int& x_out, int& y_out) {
-    const float M11 = M.at<float>(0, 0), M12 = M.at<float>(0, 1), M13 = M.at<float>(0, 2); 
-    const float M21 = M.at<float>(1, 0), M22 = M.at<float>(1, 1), M23 = M.at<float>(1, 2); 
-    const float M31 = M.at<float>(2, 0), M32 = M.at<float>(2, 1), M33 = M.at<float>(2, 2);
-
-    float X = M11 * x + M12 * y + M13 * 1.0f;
-    float Y = M21 * x + M22 * y + M23 * 1.0f;
-    float W = M31 * x + M32 * y + M33 * 1.0f;
-    x_out = (int)(X/W+0.5);
-    y_out = (int)(Y/W+0.5);
-}
-/*---------------------------边线处理-----------------------------*/
-
-// 透视变换
-void perspective_transform_points(int pts_in[][2],int num,float pts_out[][2]){
-    for (int i=0;i<num;i++){
-        int x = pts_in[i][0];
-        int y = pts_in[i][1];
-        pts_out[i][0] = map_x[y][x];
-        pts_out[i][1] = map_y[y][x];
-    }
-}
-
-// 左手迷宫巡线
-void findline_lefthand_adaptive(int x, int y){
-    int half = all_block_size / 2;
-    int step = 0, dir = 0, turn = 0;
-    while (step < Lline_num && half < x && x < IMG_W - half - 1 && TRACK_HEIGHT_MAX < y && y < IMG_H - half - 1 && turn < 4) {
-        int local_thres = 0;
-        for (int dy = -half; dy <= half; dy++) {
-            for (int dx = -half; dx <= half; dx++) {
-                local_thres += IMG_AT(img_gray, x + dx, y + dy);
+    // 右边界延长
+    TFSite = 0;
+    if (ExtenRFlag != 'F') {
+        for (Ysite = 108; Ysite >= (ImageParameter.OFFLine + 4); Ysite--) {
+            if (RowAttribute[Ysite].IsRightFind == 'W') {
+                if (Ysite + 1 < IPSH && RowAttribute[Ysite + 1].RightBorder <= 20) {  // 原 10 → 20
+                    ImageParameter.OFFLine = Ysite + 1;
+                    break;
+                }
+                int search_y = Ysite;
+                while (search_y >= (ImageParameter.OFFLine + 4)) {
+                    search_y--;
+                    if (search_y >= 2 &&
+                        RowAttribute[search_y].IsRightFind == 'T' &&
+                        RowAttribute[search_y - 1].IsRightFind == 'T' &&
+                        RowAttribute[search_y - 2].IsRightFind == 'T' &&
+                        RowAttribute[search_y - 2].RightBorder < 140 &&
+                        RowAttribute[search_y - 2].RightBorder > 20) {
+                        right_FTSite = search_y - 2;
+                        break;
+                    }
+                }
+                if (right_FTSite > ImageParameter.OFFLine) {
+                    DetR = (float)(RowAttribute[right_FTSite].RightBorder - RowAttribute[TFSite].RightBorder) /
+                          (float)(right_FTSite - TFSite);
+                    for (ytemp = TFSite; ytemp >= right_FTSite; ytemp--) {
+                        RowAttribute[ytemp].RightBorder = (int)(DetR * (ytemp - TFSite)) + RowAttribute[TFSite].RightBorder;
+                    }
+                }
+            } else {
+                TFSite = Ysite + 2;
             }
         }
-        local_thres /= all_block_size * all_block_size;
-        local_thres -= adapt_clip;
+    }
 
-        uint8_t front_value = IMG_AT(img_gray, x + dir_front[dir][0], y + dir_front[dir][1]);
-        uint8_t frontleft_value = IMG_AT(img_gray, x + dir_frontleft[dir][0], y + dir_frontleft[dir][1]);
-        if (front_value < local_thres) {
-            dir = (dir + 1) % 4;
-            turn++;
-        } else if (frontleft_value < local_thres) {
-            x += dir_front[dir][0];
-            y += dir_front[dir][1];
-            Lline[step][0] = x;
-            Lline[step][1] = y;
-            step++;
-            turn = 0;
+    // 重新计算中线
+    for (Ysite = 119; Ysite >= ImageParameter.OFFLine; Ysite--) {
+        RowAttribute[Ysite].Center = (RowAttribute[Ysite].LeftBorder + RowAttribute[Ysite].RightBorder) / 2;
+        RowAttribute[Ysite].Wide = RowAttribute[Ysite].RightBorder - RowAttribute[Ysite].LeftBorder;
+    }
+}
+
+// ========================================== 前瞻误差计算 ==========================================
+int Det_True = 0;
+
+void Prospective_error(void) {
+    float DetTemp = 0;
+    int TowPoint = 0;
+    float UnitAll = 0;
+    int Ysite;
+
+    TowPoint = ImageParameter.OFFLine + ImageParameter.TowPoint;
+
+    if (TowPoint < ImageParameter.OFFLine)
+        TowPoint = ImageParameter.OFFLine + 1;
+    if (TowPoint >= 98) TowPoint = 98;  // 原 49 → 98
+
+    if ((TowPoint - 5) >= ImageParameter.OFFLine) {
+        for (Ysite = (TowPoint - 5); Ysite < TowPoint; Ysite++) {
+            DetTemp = DetTemp + Weighting[TowPoint - Ysite - 1] * (RowAttribute[Ysite].Center);
+            UnitAll = UnitAll + Weighting[TowPoint - Ysite - 1];
+        }
+        for (Ysite = (TowPoint + 5); Ysite > TowPoint; Ysite--) {
+            DetTemp += Weighting[-TowPoint + Ysite - 1] * (RowAttribute[Ysite].Center);
+            UnitAll += Weighting[-TowPoint + Ysite - 1];
+        }
+        DetTemp = (RowAttribute[TowPoint].Center + DetTemp) / (UnitAll + 1);
+    }
+    else if (TowPoint > ImageParameter.OFFLine) {
+        for (Ysite = ImageParameter.OFFLine; Ysite < TowPoint; Ysite++) {
+            DetTemp += Weighting[TowPoint - Ysite - 1] * (RowAttribute[Ysite].Center);
+            UnitAll += Weighting[TowPoint - Ysite - 1];
+        }
+        for (Ysite = (TowPoint + TowPoint - ImageParameter.OFFLine); Ysite > TowPoint; Ysite--) {
+            DetTemp += Weighting[-TowPoint + Ysite - 1] * (RowAttribute[Ysite].Center);
+            UnitAll += Weighting[-TowPoint + Ysite - 1];
+        }
+        DetTemp = (RowAttribute[Ysite].Center + DetTemp) / (UnitAll + 1);
+    }
+    else if (ImageParameter.OFFLine < 98) {
+        for (Ysite = (ImageParameter.OFFLine + 3); Ysite > ImageParameter.OFFLine; Ysite--) {
+            DetTemp += Weighting[-TowPoint + Ysite - 1] * (RowAttribute[Ysite].Center);
+            UnitAll += Weighting[-TowPoint + Ysite - 1];
+        }
+        DetTemp = (RowAttribute[ImageParameter.OFFLine].Center + DetTemp) / (UnitAll + 1);
+    }
+    else
+        DetTemp = Det_True;
+
+    Det_True = (int)DetTemp;
+    ImageParameter.Det_True = Det_True;
+}
+
+// ========================================== 出界保护 ==========================================
+void Emergency_Breaking(void) {
+    extern bool car_started;
+    if (car_started && !SystemData.Stop) {
+        int black_count = 0;
+        int total_pixels = 0;
+        // 检查底部10行 (原 41→46 → 82→92)
+        for (int y = 82; y < 92; y++) {
+            for (int x = 0; x < IPSW; x++) {
+                if (heheImage[y][x] == 0) black_count++;
+                total_pixels++;
+            }
+        }
+        if (total_pixels > 0 && (black_count * 100 / total_pixels) > 80) {
+            SystemData.Stop = 1;
+            printf("Emergency: off-track detected!\n");
+        }
+    }
+}
+
+// ========================================== 打印边界调试信息 ==========================================
+void PrintBorders(const RowAttributetypedef* rowAttributes, int numRows) {
+    for (int y = 0; y < numRows; y++) {
+        int left = rowAttributes[y].LeftBorder;
+        int right = rowAttributes[y].RightBorder;
+        cout << "Row " << y << ": Left=" << left << ", Right=" << right << endl;
+    }
+}
+
+// ========================================== 初始化 NCNN 模型 (已禁用) ==========================================
+static void init_ncnn_model(void) {
+    ncnn_initialized = 0;
+}
+
+// ========================================== 红色物块识别 ==========================================
+int detect_red_color_block(void) {
+    init_ncnn_model();
+
+    red_block_detected = 0;
+    red_block_center_x = -1;
+    red_block_center_y = -1;
+    extract_region_x = -1;
+    extract_region_y = -1;
+
+    // 创建红色掩码
+    Mat red_mask(IPSH, IPSW, CV_8UC1);
+    for (int i = 0; i < IPSH; i++) {
+        for (int j = 0; j < IPSW; j++) {
+            uint8_t r = color_image[i][j][2];
+            uint8_t g = color_image[i][j][1];
+            uint8_t b = color_image[i][j][0];
+            red_mask.at<uchar>(i, j) = (r > 100 && r > g + 30 && r > b + 10) ? 255 : 0;
+        }
+    }
+
+    Mat labels, stats, centroids;
+    int numLabels = connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
+
+    if (numLabels <= 1) {
+        consecutive_detect_count = 0;
+        return 0;
+    }
+
+    struct BlockInfo {
+        int center_x, center_y;
+        int area;
+    };
+    std::vector<BlockInfo> validBlocks;
+
+    int minArea = 30;
+    for (int i = 1; i < numLabels; i++) {
+        int area = stats.at<int>(i, CC_STAT_AREA);
+        if (area < minArea) continue;
+
+        int left = stats.at<int>(i, CC_STAT_LEFT);
+        int top = stats.at<int>(i, CC_STAT_TOP);
+        int width = stats.at<int>(i, CC_STAT_WIDTH);
+        int height = stats.at<int>(i, CC_STAT_HEIGHT);
+
+        int center_x = left + width / 2;
+        int center_y = top + height / 2;
+
+        int rowIndex = center_y;
+        if (rowIndex < 0) rowIndex = 0;
+        if (rowIndex >= IPSH) rowIndex = IPSH - 1;
+
+        int leftBorder = RowAttribute[rowIndex].LeftBorder;
+        int rightBorder = RowAttribute[rowIndex].RightBorder;
+
+        // 色块中心必须在赛道边界之间 (放宽容差)
+        if (center_x <= leftBorder - 40 || center_x >= rightBorder + 40) continue;
+
+        validBlocks.push_back({center_x, center_y, area});
+    }
+
+    if (validBlocks.empty()) {
+        consecutive_detect_count = 0;
+        return 0;
+    }
+
+    // 从下往上找，取最下方的有效色块
+    BlockInfo targetBlock = validBlocks[0];
+    for (auto& block : validBlocks) {
+        if (block.center_y > targetBlock.center_y) {
+            targetBlock = block;
+        }
+    }
+
+    consecutive_detect_count++;
+    if (consecutive_detect_count >= 6) {
+        red_block_center_x = targetBlock.center_x;
+        red_block_center_y = targetBlock.center_y;
+        red_block_detected = 1;
+    }
+    printf("[RED_BLOCK] DETECTED! center=(%d, %d) area=%d validBlocks=%d\n",
+       red_block_center_x, red_block_center_y, targetBlock.area, (int)validBlocks.size());
+
+    extract_region_size = 64;
+    int src_size = 32;
+    int extract_y = red_block_center_y - 21;
+    int extract_x = red_block_center_x - 16;
+
+    if (extract_y < 0) extract_y = 0;
+    if (extract_y > IPSH - src_size) extract_y = IPSH - src_size;
+    if (extract_x < 0) extract_x = 0;
+    if (extract_x > IPSW - src_size) extract_x = IPSW - src_size;
+
+    extract_region_x = extract_x;
+    extract_region_y = extract_y;
+
+    detect_red_block_classify();
+    return 1;
+}
+
+// ========================================== 红色物块分类 (已禁用) ==========================================
+int detect_red_block_classify(void) {
+    return 0;
+}
+
+// ========================================== 图像处理主函数 ==========================================
+void ImageProcess(void) {
+    // flag 保护性检查
+    if (ImageParameter.image_element_rings_flag < 0 ||
+        ImageParameter.image_element_rings_flag > 9) {
+        ImageParameter.image_element_rings_flag = 0;
+        ImageParameter.image_element_rings = 0;
+        ImageParameter.ring_big_small = 0;
+    }
+
+    ImageParameter.OFFLine = 10;   // 原 2 → 10
+    ImageParameter.WhiteLine = 0;
+    ImageParameter.WhiteLine_L = 0;
+    ImageParameter.WhiteLine_R = 0;
+    for (Ysite = 119; Ysite >= ImageParameter.OFFLine; Ysite--) {
+        RowAttribute[Ysite].IsLeftFind = 'F';
+        RowAttribute[Ysite].IsRightFind = 'F';
+        RowAttribute[Ysite].LeftBorder = 0;
+        RowAttribute[Ysite].RightBorder = 159;  // 原 79 → 159
+    }
+
+    Thershold_separation_Otsu();
+    Bin_Image_Filter();
+    DrawLinesBasic();
+    DrawLinesProcess();
+    DrawExtensionLine();
+
+    // 八邻域巡线作为元素判断依据
+    Search_Border_OTSU(heheImage, IPSH, IPSW, IPSH - 1);
+
+    // 元素识别
+    Element_Test();
+
+    // 元素处理
+    Element_Handle();
+
+    // 更新前瞻
+    Update_Dynamic_Lookahead();
+
+    // 前瞻误差计算
+    Prospective_error();
+
+    // 红色物块避让
+    if (red_block_detected && ImageParameter.image_element_rings_flag == 0) {
+        const int AVOID_OFFSET = 80;  // 原 40 → 80 (适应翻倍后的图像宽度)
+
+        int leftSpace = red_block_center_x - RowAttribute[80].LeftBorder;  // 原 40 → 80
+        int rightSpace = RowAttribute[80].RightBorder - red_block_center_x;
+
+        if (leftSpace > rightSpace) {
+            ImageParameter.Det_True -= AVOID_OFFSET;
         } else {
-            x += dir_frontleft[dir][0];
-            y += dir_frontleft[dir][1];
-            dir = (dir + 3) % 4;
-            Lline[step][0] = x;
-            Lline[step][1] = y;
-            step++;
-            turn = 0;
-        }
-        
-        // uvc.frame_rgb.at<Vec3b>(y,x) = Vec3b(0,0,255);
-    }
-    Lline_num = step;
-}
-
-// 右手迷宫巡线
-void findline_righthand_adaptive(int x, int y){
-    int half = all_block_size / 2;
-    int step = 0, dir = 0, turn = 0;
-    while (step < Rline_num && half < x && x < IMG_W - half - 1 && TRACK_HEIGHT_MAX < y && y < IMG_H - half - 1 && turn < 4) {
-        int local_thres = 0;
-        for (int dy = -half; dy <= half; dy++) {
-            for (int dx = -half; dx <= half; dx++) {
-                local_thres += IMG_AT(img_gray, x + dx, y + dy);
-            }
-        }
-        local_thres /= all_block_size * all_block_size;
-        local_thres -= adapt_clip;
-
-        uint8_t front_value = IMG_AT(img_gray, x + dir_front[dir][0], y + dir_front[dir][1]);
-        uint8_t frontright_value = IMG_AT(img_gray, x + dir_frontright[dir][0], y + dir_frontright[dir][1]);
-        if (front_value < local_thres) {
-            dir = (dir + 3) % 4;
-            turn++;
-        } else if (frontright_value < local_thres) {
-            x += dir_front[dir][0];
-            y += dir_front[dir][1];
-            Rline[step][0] = x;
-            Rline[step][1] = y;
-            step++;
-            turn = 0;
-        } else {
-            x += dir_frontright[dir][0];
-            y += dir_frontright[dir][1];
-            dir = (dir + 1) % 4;
-            Rline[step][0] = x;
-            Rline[step][1] = y;
-            step++;
-            turn = 0;
-        }
-        // uvc.frame_rgb.at<Vec3b>(y,x) = Vec3b(0,0,255);
-    }
-    Rline_num = step;
-}
-
-// 寻找左起始点并巡线
-// 修正版：使用有符号 int，加入边界检查，避免 wrap-around
-void search_Lline(int height_start, int height_min)
-{
-    int begin_x, begin_y;
-    bool found_flag = false;
-
-    // 从左侧开始
-    begin_y = height_start - all_block_size / 2 - 2;  // 可能为负，下面会裁剪
-    begin_x = all_block_size / 2 + 1;
-
-    // 裁剪起点到合法范围
-    if (begin_y < 0) begin_y = 0;
-    if (begin_y >= IMG_H) begin_y = IMG_H - 1;
-    if (begin_x < 0) begin_x = 0;
-    if (begin_x >= IMG_W) begin_x = IMG_W - 1;
-
-    // 如果起始点为黑点（边线外）则按 x 轴向内寻找白点
-    auto safe_IMG_AT = [&](int x, int y)->int {
-        if (x < 0 || x >= (int)IMG_W || y < 0 || y >= (int)IMG_H) return 0; // treat out-of-bounds as black
-        return IMG_AT(img_gray, x, y);
-    };
-
-    if (safe_IMG_AT(begin_x, begin_y) <= start_thre)
-    {
-        int right_limit = IMG_W / 2 - CAR_IMGAGE_W / 2;
-        if (right_limit < 0) right_limit = 0;
-        // iterate x to the right, but ensure we don't overflow
-        for (int x = begin_x; x < right_limit; /* increment inside */)
-        {
-            int i = 0;
-            if (safe_IMG_AT(x, begin_y) > start_thre)
-            {
-                // 检查后续 CHECK_DIS 个像素是否为噪点, 且不要越界
-                bool is_noise = false;
-                for (i = 1; i <= CHECK_DIS; ++i)
-                {
-                    int xi = x + i;
-                    if (xi >= (int)IMG_W) { is_noise = true; break; } // 到边界视作噪点/结束
-                    if (safe_IMG_AT(xi, begin_y) <= start_thre)
-                    {
-                        // 是噪点，跳过到 x + i + 1（但确保不越界）
-                        x = x + i + 1;
-                        if (x >= (int)IMG_W) x = IMG_W - 1;
-                        is_noise = true;
-                        break;
-                    }
-                }
-                if (is_noise)
-                {
-                    // 继续主循环（x 已更新）
-                    if (x >= right_limit) break;
-                    continue;
-                }
-            }
-
-            // 如果 i > CHECK_DIS 表示不是噪点（即连续 CHECK_DIS 点都为白）
-            // 但是上面我们 only set i upto CHECK_DIS; check condition:
-            // If last loop ran fully (i == CHECK_DIS + 1) -> not noise
-            // Simpler: re-evaluate region to decide
-            // 直接判定当前点及周围是否满足为真实边线
-            bool accept = false;
-            // 检查当前点后续 CHECK_DIS 是否全为白 (作为简单判定)
-            bool ok = true;
-            for (int k = 0; k <= CHECK_DIS; ++k)
-            {
-                int xi = x + k;
-                if (xi >= (int)IMG_W || safe_IMG_AT(xi, begin_y) <= start_thre) { ok = false; break; }
-            }
-            if (ok) accept = true;
-
-            if (accept)
-            {
-                begin_x = x;
-                found_flag = true;
-                break;
-            }
-            else
-            {
-                // 否则移动到下一个像素继续
-                x++;
-                if (x >= right_limit) break;
-            }
-        }
-    }
-    else
-    {
-        // 起点为白点，则按 y 轴向上寻找黑点
-        for (int y = begin_y; y > height_min && y >= 0; --y)
-        {
-            int i = 0;
-            if (safe_IMG_AT(begin_x, y) <= start_thre)
-            {
-                bool is_noise = false;
-                for (i = 1; i <= CHECK_DIS; ++i)
-                {
-                    int yi = y - i;
-                    if (yi < 0) { is_noise = true; break; }
-                    if (safe_IMG_AT(begin_x, yi) > start_thre)
-                    {
-                        // 噪点，继续从 y - (i+1) 处搜索
-                        y = y - (i + 1);
-                        if (y < height_min) y = height_min;
-                        is_noise = true;
-                        break;
-                    }
-                }
-                if (is_noise) continue;
-            }
-
-            // 不是噪点，判定为起点
-            // 简单判定：当前点连续 CHECK_DIS 皆为黑
-            bool ok = true;
-            for (int k = 0; k <= CHECK_DIS; ++k)
-            {
-                int yi = y - k;
-                if (yi < 0 || safe_IMG_AT(begin_x, yi) > start_thre) { ok = false; break; }
-            }
-            if (ok)
-            {
-                begin_y = y;
-                found_flag = true;
-                break;
-            }
-            // 否则继续上移
+            ImageParameter.Det_True += AVOID_OFFSET;
         }
     }
 
-    if (found_flag)
-    {
-        Lline_num = POINTS_MAX_LEN;
-        findline_lefthand_adaptive(begin_x, begin_y);
-    }
-    else
-    {
-        Lline_num = 0;
-    }
+    // 出界保护
+    Emergency_Breaking();
 }
 
-// 寻找右起始点并巡线
-// 修正版右侧搜索：同样用 int，加入边界检查
-void search_Rline(int height_start, int height_min)
-{
-    int begin_x, begin_y;
-    bool found_flag = false;
-
-    begin_y = height_start - all_block_size / 2 - 2;
-    begin_x = IMG_W - all_block_size / 2 - 2;
-
-    if (begin_y < 0) begin_y = 0;
-    if (begin_y >= IMG_H) begin_y = IMG_H - 1;
-    if (begin_x < 0) begin_x = 0;
-    if (begin_x >= IMG_W) begin_x = IMG_W - 1;
-
-    auto safe_IMG_AT = [&](int x, int y)->int {
-        if (x < 0 || x >= (int)IMG_W || y < 0 || y >= (int)IMG_H) return 0;
-        return IMG_AT(img_gray, x, y);
-    };
-
-    if (safe_IMG_AT(begin_x, begin_y) <= start_thre)
-    {
-
-        int left_limit = IMG_W / 2 + CAR_IMGAGE_W / 2;
-        if (left_limit < 0) left_limit = 0;
-        // iterate x to the left
-        for (int x = begin_x; x > left_limit; /* decrement inside */)
-        {
-            int i = 0;
-            if (safe_IMG_AT(x, begin_y) > start_thre)
-            {
-                // 检查左侧 CHECK_DIS 个像素
-                bool is_noise = false;
-                for (i = 1; i <= CHECK_DIS; ++i)
-                {
-                    int xi = x - i;
-                    if (xi < 0) { is_noise = true; break; } // 到边界当噪点处理
-                    if (safe_IMG_AT(xi, begin_y) <= start_thre)
-                    {
-                        // 噪点，移动到 x - (i+1)
-                        x = x - (i + 1);
-                        if (x < 0) x = 0;
-                        is_noise = true;
-                        break;
-                    }
-                }
-                if (is_noise)
-                {
-                    if (x <= left_limit) break;
-                    continue;
-                }
-            }
-
-            // 简单判定：检查当前及其左侧 CHECK_DIS 是否全为��� -> 接受
-            bool ok = true;
-            for (int k = 0; k <= CHECK_DIS; ++k)
-            {
-                int xi = x - k;
-                if (xi < 0 || safe_IMG_AT(xi, begin_y) <= start_thre) { ok = false; break; }
-            }
-
-            if (ok)
-            {
-                begin_x = x;
-                found_flag = true;
-                break;
-            }
-            else
-            {
-                // 继续左移
-                x--;
-                if (x <= left_limit) break;
-            }
-        }
-    }
-    else
-    {
-        for (int y = begin_y; y > height_min && y >= 0; --y)
-        {
-            int i = 0;
-            if (safe_IMG_AT(begin_x, y) <= start_thre)
-            {
-                bool is_noise = false;
-                for (i = 1; i <= CHECK_DIS; ++i)
-                {
-                    int yi = y - i;
-                    if (yi < 0) { is_noise = true; break; }
-                    if (safe_IMG_AT(begin_x, yi) > start_thre)
-                    {
-                        y = y - (i + 1);
-                        if (y < height_min) y = height_min;
-                        is_noise = true;
-                        break;
-                    }
-                }
-                if (is_noise) continue;
-            }
-
-            bool ok = true;
-            for (int k = 0; k <= CHECK_DIS; ++k)
-            {
-                int yi = y - k;
-                if (yi < 0 || safe_IMG_AT(begin_x, yi) > start_thre) { ok = false; break; }
-            }
-            if (ok)
-            {
-                begin_y = y;
-                found_flag = true;
-                break;
-            }
-        }
-    }
-
-    if (found_flag)
-    {
-        Rline_num = POINTS_MAX_LEN;
-        findline_righthand_adaptive(begin_x, begin_y);
-    }
-    else
-    {
-        Rline_num = 0;
-    }
-}
-
-// 对点集三角滤波
-void blur_points(float pts_in[][2], int num, float pts_out[][2]) {
-    int half = all_block_size / 2;
-    for (int i = 0; i < num; i++) {
-        // 默认置点为(0,0)
-        pts_out[i][0] = pts_out[i][1] = 0;
-        for (int j = -half; j <= half; j++) {
-            //取点为 i-n/2...i-1 i i+2...i+n/2
-            pts_out[i][0] += 1.0*pts_in[clip(i + j, 0, num - 1)][0] * (half + 1 - abs(j));
-            pts_out[i][1] += 1.0*pts_in[clip(i + j, 0, num - 1)][1] * (half + 1 - abs(j));
-        }
-        // 权重分布为 1 2 ...half+1... 2 1
-        // 总权重为(1+2+...+half)*2+(half+1)=(half+1)half+(half+1)=(half+1)(half+1)
-        pts_out[i][0] /= (half + 1) * (half + 1);
-        pts_out[i][1] /= (half + 1) * (half + 1);
-    }
-}
-
-// 点集等距采样,使走过的每段折线段的距离为固定距离
-void resample_points(float pts_in[][2], int num1, float pts_out[][2], int *num2){
-    float remain = 0.f; //两点间剩余要采样的长度
-    float dist = sampled_dist*M2PIX; // 固定距离
-    int len = 0;
-    *num2 = POINTS_MAX_LEN;
-    //由于用到i+1个in点,这里遍历到num1-1,且总点数要小于最大长度num2
-    for(int i=0; i<num1-1 && len < *num2; i++){
-        // 当前点坐标
-        float x0 = pts_in[i][0];
-        float y0 = pts_in[i][1];
-        // 下一个点和当前点坐标差值
-        float dx = pts_in[i+1][0] - x0;
-        float dy = pts_in[i+1][1] - y0;
-        // 两点距离,即初始要采样的距离
-        float ds = sqrt(dx*dx+dy*dy);
-        // 单位方向向量化
-        dx /= ds; // dx=cosα
-        dy /= ds; // dy=sinα
-
-        // remain不足ds时进行插值
-        while (remain < ds && len < *num2){
-            // x,y按方向向量移动remain
-            x0 += dx * remain;
-            pts_out[len][0] = x0;
-            y0 += dy * remain;
-            pts_out[len][1] = y0;
-
-            len++;
-            ds -= remain;  // 总采样距离ds减少
-            remain = dist; // remain固定为采样距离dist
-        }
-        remain -= ds;      // 为下次采样开头做准备
-    }
-    *num2 = len;
-}
-
-// 点集局部角度变化率
-void local_angle_points(float pts_in[][2], int num, float angle_out[]){
-    // 首个点和最后一个点无法计算变化率,直接置为0
-    angle_out[0] = 0;
-    angle_out[num-1] = 0;
-    // 对每个点,计算pin(i-angle_idx),pin(i+angle_idx)方向向量的夹角
-    for (int i = 1; i < num-1; i++) {
-         //计算pini和pin(i-dist)间的距离
-        float dx0 = pts_in[i][0] - pts_in[clip(i - angle_idx, 0, num - 1)][0];
-        float dy0 = pts_in[i][1] - pts_in[clip(i - angle_idx, 0, num - 1)][1];
-        float ds0 = sqrtf(dx0 * dx0 + dy0 * dy0);
-
-        //计算pin(i+dist)和pini间的距离
-        float dx1 = pts_in[clip(i + angle_idx, 0, num - 1)][0] - pts_in[i][0];
-        float dy1 = pts_in[clip(i + angle_idx, 0, num - 1)][1] - pts_in[i][1];
-        float ds1 = sqrtf(dx1 * dx1 + dy1 * dy1);
-
-        //计算两个方向向量的角度,此处也是将dx视作cos,dy视作sin
-        dx0 /= ds0;
-        dy0 /= ds0;
-        dx1 /= ds1;
-        dy1 /= ds1;
-
-        //atan2f(y/x)严格计算夹角,这里实际上通过atan2f(sinθ/cosθ)=atan2f(tanθ)=θ来计算
-        //其中二维向量可以写作三维:l0=(cos0,sin0,0),l1=(cos1,sin1,0),|l0|=|l1|=1
-        //求叉积l0×l1=(0,0,cos0*sin1-cos1*sin0),取z分量就是sinθ(正负代表旋转方向)
-        //求点积l0·l1=cos0*cos1+sin0*sin1,就是cosθ(正负代表左右象限)
-        angle_out[i] = fabs(atan2f(dx0 * dy1 - dx1 * dy0, dx0 * dx1 + dy0 * dy1) / PI * 180);
-    }
-}
-
-// 角度变化率非极大抑制,返回最大角及索引
-void nms_angle(float angle_in[], int num, float *angle_max, int *idx) {
-    *angle_max = 0;
-    //末端角点无效
-    num--;
-    //从第2个点开始
-    for (uint8_t i=1;i<num;i++){
-        if (angle_in[i] > *angle_max) {
-            *angle_max = angle_in[i];
-            *idx = i;
-        }
-    }
-}
-
-// 从左边线跟踪中线
-void track_leftline(float dist) {
-    for (int i = 0; i < sampled_Lline_num; i++) {
-        // 求解±approx_idx内
-        float dx = sampled_Lline[clip(i + approx_idx, 0, sampled_Lline_num - 1)][0] 
-                 - sampled_Lline[clip(i - approx_idx, 0, sampled_Lline_num - 1)][0];
-        float dy = sampled_Lline[clip(i + approx_idx, 0, sampled_Lline_num - 1)][1]
-                 - sampled_Lline[clip(i - approx_idx, 0, sampled_Lline_num - 1)][1];
-        float ds = sqrt(dx * dx + dy * dy);
-        dx /= ds;
-        dy /= ds;
-        // dist就是得到的像素距离下的半赛道长
-        // 对(dx,dy)即(cosθ,sinθ)向左旋转90°
-        // 得到(cos(θ+π/2),sin(θ+π/2))=(-sinθ,cosθ)=(-dy,dx)
-        L2Mline[i][0] = sampled_Lline[i][0] - dy * dist;
-        L2Mline[i][1] = sampled_Lline[i][1] + dx * dist;
-    }
-}
-
-// 从右边线跟踪中线
-void track_rightline(float dist) {
-    for (int i = 0; i < sampled_Rline_num; i++) {
-        float dx = sampled_Rline[clip(i + approx_idx, 0, sampled_Rline_num - 1)][0] 
-                 - sampled_Rline[clip(i - approx_idx, 0, sampled_Rline_num - 1)][0];
-        float dy = sampled_Rline[clip(i + approx_idx, 0, sampled_Rline_num - 1)][1] 
-                 - sampled_Rline[clip(i - approx_idx, 0, sampled_Rline_num - 1)][1];
-        float ds = sqrt(dx * dx + dy * dy);
-        dx /= ds;
-        dy /= ds;
-        //(cos(θ-π/2),sin(θ-π/2))=(sinθ,-cosθ)=(dy,-dx)
-        R2Mline[i][0] = sampled_Rline[i][0] + dy * dist;
-        R2Mline[i][1] = sampled_Rline[i][1] - dx * dist;
-    }
-}
-
-/**
- * @brief 十字补线函数（固定数组长度版）
- * @param pts_in 边线点数组
- * @param num 指向数组当前有效点数的指针（作为上限参考，不增加其值）
- * @param corner_index 角点索引（补线的起点）
- * @param dist 补线步长
- */
-void supplement_line(float pts_in[][2], int* num, int corner_index, float dist) {
-    if (corner_index <= 1 || corner_index >= *num) return;
-
-    float avg_angle = 0;
-    for (int i = 0; i < corner_index - 1; i++) {
-        float dx = pts_in[i + 1][0] - pts_in[i][0];
-        float dy = pts_in[i + 1][1] - pts_in[i][1];
-        avg_angle += -atan2f(dy, dx);
-    }
-    avg_angle /= (corner_index - 1);
-
-    float start_x = pts_in[corner_index][0];
-    float start_y = pts_in[corner_index][1];
-    float abs_angle = fabs(avg_angle);
-
-    // 垂直趋势判定：45° ~ 135° (PI/4 ~ 3PI/4)
-    if (abs_angle > PI / 4 && abs_angle < 3 * PI / 4) {
-        int current_idx = corner_index;
-
-        // 循环直到 current_idx 达到数组的最大索引 (POINTS_MAX_LEN - 1)
-        while (current_idx < (POINTS_MAX_LEN - 1)) {
-            start_x += dist * (float)cos(avg_angle);
-            start_y -= dist * (float)sin(avg_angle);
-
-            current_idx++; // 移动到下一个位置
-            pts_in[current_idx][0] = start_x;
-            pts_in[current_idx][1] = start_y;
-        }
-        // 更新有效点数为填满后的总长度
-        *num = POINTS_MAX_LEN;
-        // --- 修改部分结束 ---
-    } 
-    else {
-        // 水平趋势：从拐点坐标向下拉线，覆盖水平边线信息
-        for (int i = 0; i < corner_index; i++)
-        {
-            pts_in[i][0] = pts_in[corner_index][0];
-            pts_in[i][1] = pts_in[corner_index][1] + dist * (corner_index - i);
-        }
-    }
-}
-
-/*---------------------------角度计算-----------------------------*/
-// /**
-//  * @brief 计算加权前瞻偏移角度 (适配 Mline[i][2] 数据结构)
-//  * @param Mline 中线点集指针，Mline[i][0]为x, Mline[i][1]为y
-//  * @param num 中线数组的有效点数
-//  * @return float 最终的加权偏移角度（度）
-//  */
-// float calculate_weighted_offset_angle(float (*Mline)[2], int num) {
-//     const int target_samples = 15;
-//     const int start_idx = 3;
-//     static float last_angle = 0.0f; // 静态变量保持记忆
-    
-//     // 情况 A: 点数不足，直接返回上一帧
-//     if (num <= start_idx) return last_angle;
-
-//     float total_weighted_angle = 0.0f;
-//     float total_weight = 0.0f;
-//     const int origin_x = IMG_W / 2;
-//     const int origin_y = IMG_H - 1;
-
-//     int available_points = num - start_idx;
-//     float step = (available_points > target_samples) ? 
-//                  (float)available_points / (float)target_samples : 1.0f;
-
-//     for (int k = 0; k < target_samples; k++) {
-//         int i = start_idx + (int)(k * step);
-//         if (i >= num) break;
-
-//         float dx = Mline[i][0] - (float)origin_x;
-//         float dy = (float)origin_y - Mline[i][1];
-
-//         if (dy <= 0) continue;
-
-//         float current_angle = atan2f(dx, dy);
-//         float weight = (float)(target_samples - k); 
-        
-//         total_weighted_angle += current_angle * weight;
-//         total_weight += weight;
-
-//         if (step == 1.0f && i == num - 1) break;
-//     }
-
-//     // 情况 B: 循环完发现没有有效权重（计算失败），也要返回上一帧
-//     // 而不是返回 0.0f
-//     if (total_weight < 1e-5f) return last_angle; 
-
-//     // 计算平均弧度并转换
-//     float final_angle = (total_weighted_angle / total_weight) * 180.0f / 3.14159265f;
-//     final_angle += angle_compensation;
-
-//     // 限幅
-//     if (final_angle > 30.0f)  final_angle = 30.0f;
-//     if (final_angle < -30.0f) final_angle = -30.0f;
-
-//     // 更新记忆
-//     last_angle = final_angle;
-
-//     return final_angle;
-// }
-
-/**
- * @brief 计算加权前瞻偏移角度 (适配数组权重分配，压制近端震荡)
- * @param Mline 中线点集指针，Mline[i][0]为x, Mline[i][1]为y
- * @param num 中线数组的有效点数
- * @return float 最终的加权偏移角度（度）
- */
-float calculate_weighted_offset_angle(float (*Mline)[2], int num) {
-    const int target_samples = 15;
-    const int start_idx = 3;
-    static float last_angle = 0.0f; // 静态变量保持记忆
-    
-    // --- 权重分配数组 (由近及远) ---
-    // 索引 0-4 为近处，5-9 为中处，10-14 为远处
-    // 你可以根据实测调整这些数值：数值越大，该点对转向的影响越大
-    const float weights[15] = {
-        1.30f,  1.42f,  1.40f,  1.30f,  1.2f,  // 近处：低权重，减少抖动
-        1.10f,  1.10f,  1.2f,  1.20f,  1.2f,  // 中间：过渡区
-        1.2f,   1.2f,   1.0f,  1.0f,   1.0f   // 远处：高权重，提供前瞻预判
-    };
-
-    // 情况 A: 点数不足，直接返回上一帧
-    if (num <= start_idx) return last_angle;
-
-    float total_weighted_angle = 0.0f;
-    float total_weight = 0.0f;
-    const int origin_x = IMG_W / 2;
-    const int origin_y = IMG_H - 1;
-
-    // 计算采样步长
-    int available_points = num - start_idx;
-    float step = (available_points > target_samples) ? 
-                 (float)available_points / (float)target_samples : 1.0f;
-
-    for (int k = 0; k < target_samples; k++) {
-        int i = start_idx + (int)(k * step);
-        if (i >= num) break;
-
-        float dx = Mline[i][0] - (float)origin_x;
-        float dy = (float)origin_y - Mline[i][1];
-
-        // --- 已根据要求删除 dy_safe 阻尼补偿逻辑，直接判断 dy ---
-        if (dy <= 0) continue;
-
-        // 直接使用原始 dy 计算当前点连线角度（弧度）
-        float current_angle = atan2f(dx, dy);
-        
-        // 从权重数组中直接取值
-        float weight = weights[k]; 
-        
-        total_weighted_angle += current_angle * weight;
-        total_weight += weight;
-
-        // 步长为1且点数较少时的退出保护
-        if (step == 1.0f && i == num - 1) break;
-    }
-
-    // 情况 B: 循环完发现没有有效权重（计算失败），返回上一帧
-    if (total_weight < 1e-5f) return last_angle; 
-
-    // 计算加权平均角度并从弧度转为角度
-    float final_angle = (total_weighted_angle / total_weight) * 180.0f / 3.14159265f;
-    
-    // 加上外部偏置补偿（如零位校准）
-    final_angle += angle_compensation;
-
-    // 限幅控制
-    if (final_angle > 30.0f)  final_angle = 30.0f;
-    if (final_angle < -30.0f) final_angle = -30.0f;
-
-    // 更新记忆，用于下一帧丢线或点数不足时使用
-    last_angle = final_angle;
-
-    return final_angle;
-}
-
-
-//去畸变后Mat
-cv::Mat De_distortion_image;
-
-// 一次图像处理
-void image_proc() {   
+// ========================================== Zouma 兼容接口: image_proc() ==========================================
+void image_proc() {
+    // 1. 获取图像帧并 resize 到 160x120
     cv::Mat frame_resized;
     cv::resize(uvc.frame_mjpg, frame_resized, cv::Size(160, 120), 0, 0, cv::INTER_NEAREST);
 
-    static cv::Mat frame_gray_small;
+    // 2. 提取灰度图 → Cramp_image[120][160]
+    cv::Mat frame_gray_small;
     cv::cvtColor(frame_resized, frame_gray_small, cv::COLOR_BGR2GRAY);
     img_gray = reinterpret_cast<uint8_t*>(frame_gray_small.ptr(0));
 
-    start_thre = get_otsu_thres(img_gray, 0, 160, TRACK_HEIGHT_MAX, 120);
+    for (int i = 0; i < IPSH; i++) {
+        for (int j = 0; j < IPSW; j++) {
+            Cramp_image[i][j] = img_gray[i * IPSW + j];
+        }
+    }
 
-    // 生成二值化图像供显示线程使用
-    for (int i = 0; i < IMG_W * IMG_H; i++) {
+    // 3. 提取彩色图像 (用于红色物块识别)
+    {
+        cv::Mat color_small;
+        cv::resize(frame_resized, color_small, cv::Size(160, 120), 0, 0, cv::INTER_NEAREST);
+        for (int i = 0; i < IPSH; i++) {
+            for (int j = 0; j < IPSW; j++) {
+                cv::Vec3b pixel = color_small.at<cv::Vec3b>(i, j);
+                color_image[i][j][0] = pixel[0];  // B
+                color_image[i][j][1] = pixel[1];  // G
+                color_image[i][j][2] = pixel[2];  // R
+            }
+        }
+    }
+
+    // 4. 生成二值化图像供显示线程
+    for (int i = 0; i < IPSW * IPSH; i++) {
         bin_img_data[i] = (img_gray[i] > start_thre) ? 255 : 0;
     }
 
-    line_process(120, 120 / 2);
+    // 5. 执行 716 视觉管线
+    ImageProcess();
 
-    element_status();
-    no_element_process();
-    crossing_process();
-    circle_process();
-    auto_tracking();
+    // 6. Det_True (像素列偏移) → onto (角度, 度)
+    int pixel_offset = ImageParameter.Det_True - PictureCentring;  // -80 ~ +80
+    float focal_length = 200.0f;  // 等效焦距 (需标定)
+    onto = atan2f((float)pixel_offset, focal_length) * 180.0f / M_PI;
 
-    max_angle = std::max(nms_Lline, nms_Rline);
-    onto = calculate_weighted_offset_angle(Mline, middle_line_length);
-
-    // if (udp.is_enable()) {
-    //     // A. 发送原始 320x160 彩色图像 (用于确认识别结果)
-    //     udp.send_image(uvc.frame_mjpg); 
-
-    //     // B. 准备并打包轨迹点 (适配 160x120 尺度)
-    //     // 定义符合上位机格式的缓冲区
-    //     static uint8_t L_buf[120][2];
-    //     static uint8_t R_buf[120][2];
-    //     static uint8_t M_buf[120][2];
-
-    //     // 清零缓冲区防止旧数据干扰
-    //     memset(L_buf, 0, sizeof(L_buf));
-    //     memset(R_buf, 0, sizeof(R_buf));
-    //     memset(M_buf, 0, sizeof(M_buf));
-
-    //     // 转换边线坐标到传输格式 (uint8_t[y][x])
-    //     for (int i = 0; i < 120; ++i) {
-    //         // 左边线
-    //         if (i < sampled_Lline_num) {
-    //             L_buf[i][0] = (uint8_t)std::clamp((int)sampled_Lline[i][0], 0, 159);
-    //             L_buf[i][1] = (uint8_t)std::clamp((int)sampled_Lline[i][1], 0, 119);
-    //         }
-    //         // 右边线
-    //         if (i < sampled_Rline_num) {
-    //             R_buf[i][0] = (uint8_t)std::clamp((int)sampled_Rline[i][0], 0, 159);
-    //             R_buf[i][1] = (uint8_t)std::clamp((int)sampled_Rline[i][1], 0, 119);
-    //         }
-    //         // 中线
-    //         if (i < middle_line_length) {
-    //             M_buf[i][0] = (uint8_t)std::clamp((int)Mline[i][0], 0, 159);
-    //             M_buf[i][1] = (uint8_t)std::clamp((int)Mline[i][1], 0, 119);
-    //         }
-    //     }
-
-    //     // C. 发送轨迹点数据包 (根据你 udp_sender 的实现调用)
-    //     // 如果你的上位机支持单独发送数组，则按顺序发送。
-    //     // 下面是示例：将三条线作为一个整体 Data 包发送
-    //     struct {
-    //         uint8_t L[120][2];
-    //         uint8_t R[120][2];
-    //         uint8_t M[120][2];
-    //     } track_packet;
-        
-    //     memcpy(track_packet.L, L_buf, sizeof(L_buf));
-    //     memcpy(track_packet.R, R_buf, sizeof(R_buf));
-    //     memcpy(track_packet.M, M_buf, sizeof(M_buf));
-
-    //     udp.send_data(&track_packet, sizeof(track_packet));
-    // }
-    // printf("onto:   %f     ,middle_line_length: %d    \r",onto,middle_line_length);
-
-    // 调试要看状态机请解注释这行
-    printf("state:%d ,element_state:%d ,left:%f  ,right:%f  \r   ",tracking_decision_machine.state,cricle_decision_machine.state,nms_Lline, nms_Rline);
-
-}
-//状态机初始化
-void tracking_decision_machine_init(){
-    tracking_decision_machine.max_angle = 0;
-    tracking_decision_machine.state = 0;
-    tracking_decision_machine.element_processing_flage = 0; //元素处理标志位，0未处理，1已处理
-    tracking_decision_machine.max_L_angle = 0;
-    tracking_decision_machine.max_R_angle = 0;
-    tracking_decision_machine.right_length = 0;
-    tracking_decision_machine.left_length = 0;
-    tracking_decision_machine.state_time_locking = STATE_TIME_LOCKING;
-    tracking_decision_machine.target_boundary = 0;
-    tracking_decision_machine.longest_side = 0;
-
+    // 限幅到 [-30, 30] 度
+    if (onto > 30.0f) onto = 30.0f;
+    if (onto < -30.0f) onto = -30.0f;
 }
 
-// 元素函数，圆环
-// 直角最大角点弯曲率不会超过100,但赛道大圆环平均110以上，小圆环100以上
-//由于小圆环个个拐点可能不太好和直角区分，所以设置状态机，当检测到超过100度的点时判断可能出现圆环
-//此时同时检查两路线的最大拐点弯曲率，如果全部都大于60～80中的某一个值，则为十字路口误判，如果是单边最大值，记录该变，进入对应的左右圆环状态，准备切换边线寻线
-//总状态机函数，0无元素，1十字，2左圆环，3右圆环
-/**
- * @brief 元素识别状态机
- * @details 负责检测十字、左圆环、右圆环，并引入仅针对圆环的出环后冷却保护
- */
-void element_status() {
-    // --- 1. 冷却时间管理（仅针对圆环生效） ---
-    if (tracking_decision_machine.is_cooling) {
-        tracking_decision_machine.cooldown_timer.stop(); // 获取当前时刻点
-        tracking_decision_machine.cooldown_threshold_sec = 5;
-        if (tracking_decision_machine.cooldown_timer.elapsed_sec() >= tracking_decision_machine.cooldown_threshold_sec) {
-            tracking_decision_machine.is_cooling = false; // 冷却时间到，允许再次识别圆环
-        }
-    }
-
-    // 只有在非处理阶段，才允许进入检测
-    if (!tracking_decision_machine.element_processing_flage) 
-    {
-        // --- 2. 十字检测 (不受冷却限制) ---
-        // if(sampled_Lline_num > LOST_LINE && sampled_Rline_num > LOST_LINE) {
-            // if(nms_Lline > CORNER_ANGLE_THRE && nms_Rline > CORNER_ANGLE_THRE) {
-            //     tracking_decision_machine.state = 1; // 十字路口状态
-            //     tracking_decision_machine.element_processing_flage = 1; 
-            //     return;
-            // }
-        // }
-
-        // --- 3. 圆环检测 (受冷却限制) ---
-        if (!tracking_decision_machine.is_cooling) // 仅在非冷却状态下检测圆环
-        {
-            if(std::max(nms_Lline, nms_Rline) > CIRCLE_ANGLE_THRE) {
-                if (sampled_Rline_num >= LOST_LINE && sampled_Lline_num >= LOST_LINE) 
-                {
-                    if (nms_Lline > CORNER_ANGLE_THRE && nms_Rline > CORNER_ANGLE_THRE) 
-                    {
-                        // 兜底逻辑：如果两边都很大，依然判定为十字
-                        tracking_decision_machine.state = 1; 
-                        tracking_decision_machine.element_processing_flage = 1;
-                        return;
-                    }
-                    else if(nms_Lline > CIRCLE_ANGLE_THRE && nms_Rline < STRAIGHT_ROAD_THRE) {
-                        tracking_decision_machine.state = 2; // 左圆环状态
-                        tracking_decision_machine.element_processing_flage = 1;
-                        return;
-                    }
-                    else if(nms_Rline > CIRCLE_ANGLE_THRE && nms_Lline < STRAIGHT_ROAD_THRE) {
-                        tracking_decision_machine.state = 3; // 右圆环状态
-                        tracking_decision_machine.element_processing_flage = 1;
-                        return;
-                    }
-                }
-            }
-        }
-        
-        if(nms_Lline > CORNER_ANGLE_THRE || nms_Rline > CORNER_ANGLE_THRE) {
-            tracking_decision_machine.state = 1; // 十字路口状态
-            tracking_decision_machine.element_processing_flage = 1; 
-            return;
-        }
-
-        //无元素检测到，状态机回到无元素状态
-        tracking_decision_machine.state = 0; 
-    }
-}
-//无元素状态处理函数
-void no_element_process(){
-    if (tracking_decision_machine.state == 0)
-    {
-        tracking_decision_machine.element_processing_flage = 0; //元素处理标志位常态失活
-        //选择最长边线跟踪中线
-        if(sampled_Lline_num>sampled_Rline_num){
-            tracking_decision_machine.target_boundary = 0; //左边线最长
-        }else if(sampled_Rline_num>sampled_Lline_num){
-            tracking_decision_machine.target_boundary = 1; //右边线最长
-        }
-    }
-}
-
-//十字路口处理函数
-void crossing_process(){
-    if (tracking_decision_machine.state == 1)
-    {
-        if (nms_Lline>CORNER_ANGLE_THRE)
-        {   //左补线
-            supplement_line(sampled_Lline,&sampled_Lline_num,nms_Lline_idx,sampled_dist*M2PIX);
-        }
-        if (nms_Rline>CORNER_ANGLE_THRE)
-        {   //右补线
-            supplement_line(sampled_Rline,&sampled_Rline_num,nms_Rline_idx,sampled_dist*M2PIX);
-        }
-        //选择最长边线跟踪中线
-        if(sampled_Lline_num>sampled_Rline_num){
-            tracking_decision_machine.target_boundary = 0; //左边线最长
-        }else if(sampled_Rline_num>sampled_Lline_num){
-            tracking_decision_machine.target_boundary = 1; //右边线最长
-        }
-        //若相等，保持原有状态
-        if((nms_Lline<CORNER_ANGLE_THRE&&nms_Rline<CORNER_ANGLE_THRE)&&sampled_Rline_num>=LOST_LINE&&sampled_Lline_num>=LOST_LINE){
-        //有一边小于直线阈值且两边均未丢线，失活元素处理状态
-        tracking_decision_machine.element_processing_flage = 0; 
-        }
-        return ;  
-    }
-    
- 
-    
-}
-
-//圆环处理函数
-void circle_process(){
-    if(tracking_decision_machine.state == 2||tracking_decision_machine.state == 3){
-        //cricle_decision_machine
-        //圆环状态机部分
-        if(tracking_decision_machine.state == 2){
-            cricle_decision_machine.side = 2;
-            // cricle_decision_machine.start_angle = ahrs
-        }
-        else if(tracking_decision_machine.state == 3){
-            cricle_decision_machine.side = 3;
-        }
-        
-        //左圆环处理===============================================================================
-        if(cricle_decision_machine.side == 2){
-            // 状态 0-1：识别到左圆环特征
-            if(!cricle_decision_machine.state_locking && cricle_decision_machine.state == 0){
-                if(nms_Lline > CORNER_ANGLE_THRE && nms_Rline < CORNER_ANGLE_THRE){
-                    cricle_decision_machine.state = 1;
-                }
-            }
-
-            // 状态 1-2：准备入环阶段
-            if(cricle_decision_machine.state == 1){
-                tracking_decision_machine.target_boundary = 0; // 巡左线
-                
-                if (nms_Lline > CORNER_ANGLE_THRE) {   
-                    supplement_line(sampled_Lline, &sampled_Lline_num, nms_Lline_idx, sampled_dist * M2PIX);
-                    cricle_decision_machine.state_locking = 0; 
-                }
-
-                if(sampled_Lline_num < LOST_LINE){
-                    if(nms_Lline < CORNER_ANGLE_THRE){
-                        if(!cricle_decision_machine.state_locking){
-                            cricle_decision_machine.state = 2;
-                        }
-                        tracking_decision_machine.target_boundary = 0;
-                        cricle_decision_machine.state_locking = 1;
-                    }
-                }
-            }
-
-            // 状态 2-3：环岛内行驶阶段
-            if(cricle_decision_machine.state == 2){
-                tracking_decision_machine.target_boundary = 0; // 持续巡左
-                
-                if (sampled_Rline_num < LOST_LINE) {
-                    cricle_decision_machine.state_locking = 0; // 右边丢线解锁
-                }   
-
-                if(sampled_Rline_num >= LOST_LINE && !cricle_decision_machine.state_locking){
-                    if(nms_Rline < CORNER_ANGLE_THRE){
-                        if(!cricle_decision_machine.state_locking){
-                            cricle_decision_machine.state = 3;
-                            cricle_decision_machine.state_locking = 1;
-                        }
-                    }
-                }
-                left_path_adjust(); // 持续矫正左侧路径
-            }
-
-            // 状态 3-4：出环阶段
-            if(cricle_decision_machine.state == 3){
-                tracking_decision_machine.target_boundary = 0; // 出左环阶段通常保持巡左或切回寻优
-                
-                if (nms_Rline > CORNER_ANGLE_THRE) {   
-                    supplement_line(sampled_Rline, &sampled_Rline_num, nms_Rline_idx, sampled_dist * M2PIX);
-                    cricle_decision_machine.state_locking = 0;
-                }
-                
-                // 对标右圆环：当右边线平均弯曲度展现为直道判定出环岛
-                if(sampled_Rline_num > LOST_LINE && nms_Rline < STRAIGHT_ROAD_THRE){
-                    if(!cricle_decision_machine.state_locking) cricle_decision_machine.state = 4;
-                }
-                // right_path_adjust(0); 
-            }
-
-            // 状态 4-0：重置与释放
-            if(cricle_decision_machine.state == 4 || cricle_decision_machine.state == 0){
-                // --- 触发冷却保护机制 ---
-                // 只有当真正完成圆环处理（flage为1）并进入重置态时，启动5秒计时器
-                if(tracking_decision_machine.element_processing_flage == 1){
-                    tracking_decision_machine.is_cooling = true;
-                    tracking_decision_machine.cooldown_timer.start(); // 记录当前时间戳，开始5秒冷却
-                }
-
-                cricle_decision_machine.state = 0;
-                cricle_decision_machine.state_locking = 0;
-                // 关键：释放全局处理标志位，允许 element_status 重新检测新元素
-                tracking_decision_machine.element_processing_flage = 0;
-                tracking_decision_machine.target_boundary = 0; // 初始化回左边界巡线
-            }
-        }
-
-        //右圆环处理===============================================================================
-        else if(cricle_decision_machine.side == 3){
-            //拐点弯曲度判断,锁失活才切换
-            //状态 0-1：识别到右圆环特征（右边有拐点，左边直）
-            if(!cricle_decision_machine.state_locking && cricle_decision_machine.state == 0){
-                if(nms_Rline > CORNER_ANGLE_THRE && nms_Lline < CORNER_ANGLE_THRE){
-                    cricle_decision_machine.state = 1;
-                }
-            }
-
-            //状态 1-2：准备入环阶段
-            if(cricle_decision_machine.state == 1){
-                tracking_decision_machine.target_boundary = 1;
-                
-                // 如果出现右拐点，进行右补线以稳定入环路径
-                if (nms_Rline > CORNER_ANGLE_THRE)
-                {   
-                    supplement_line(sampled_Rline, &sampled_Rline_num, nms_Rline_idx, sampled_dist * M2PIX);
-                    cricle_decision_machine.state_locking = 0;//解锁
-                }
-
-                if(sampled_Rline_num < LOST_LINE){
-                    // 当右侧丢线，说明车头已对准环内，切换到状态 2
-                    if(nms_Rline < CORNER_ANGLE_THRE){
-                        if(!cricle_decision_machine.state_locking){
-                            cricle_decision_machine.state = 2;//修改状态时先看锁
-                        }
-                        
-                        // 强制巡线边切换为右边（环岛内圆线），如果出现右圆环，后面的自动巡线机会自动切换到右环，否则寻有线测
-                        tracking_decision_machine.target_boundary = 1;
-                        // 上锁，防止在环内误触发状态 0
-                        cricle_decision_machine.state_locking = 1;
-                    }
-                }
-                //右边环岛赛道矫正
-                // right_path_adjust();
-            }
-
-            //状态 2-3：环岛内行驶阶段
-            if(cricle_decision_machine.state == 2){
-                // 持续巡右边线
-                tracking_decision_machine.target_boundary = 1;
-                
-                // 检测左边线（对侧）是否丢线，若丢线则解锁，准备找出口拐点
-                if (sampled_Lline_num < LOST_LINE)
-                {
-                    cricle_decision_machine.state_locking = 0;
-                }   
-                
-                // 当左边重新找到线（出口特征）且无大弯曲度时，准备切换
-                if(sampled_Lline_num >= LOST_LINE && !cricle_decision_machine.state_locking){
-                    if(nms_Lline < CORNER_ANGLE_THRE){
-                        if(!cricle_decision_machine.state_locking){
-                            cricle_decision_machine.state = 3;
-                            cricle_decision_machine.state_locking = 1;
-                        }
-                    }
-                }
-                // 右环岛赛道矫正
-                right_path_adjust();
-            }
-
-            //状态 3-4：出环阶段
-            if(cricle_decision_machine.state == 3){
-                tracking_decision_machine.target_boundary = 1;
-                
-                // 如果左边出现拐点，进行左补线并解锁
-                if (nms_Lline > CORNER_ANGLE_THRE)
-                {  
-                    supplement_line(sampled_Lline, &sampled_Lline_num, nms_Lline_idx, sampled_dist * M2PIX);
-                    cricle_decision_machine.state_locking = 0;
-                }
-                
-                // 当左边线平均弯曲度展现为直道判定出环岛
-                if(sampled_Lline_num > LOST_LINE && nms_Lline < STRAIGHT_ROAD_THRE){
-                    if(!cricle_decision_machine.state_locking) cricle_decision_machine.state = 4;
-                }
-            }
-
-            //状态 4-0：重置与释放
-            if(cricle_decision_machine.state == 4 || cricle_decision_machine.state == 0){
-                // --- 触发冷却保护机制 ---
-                if(tracking_decision_machine.element_processing_flage == 1){
-                    tracking_decision_machine.is_cooling = true;
-                    tracking_decision_machine.cooldown_timer.start(); // 开始5秒冷却倒计时
-                }
-
-                cricle_decision_machine.state = 0;
-                cricle_decision_machine.state_locking = 0;
-                // 关键：释放全局处理标志位，允许 element_status 重新检测新元素
-                tracking_decision_machine.element_processing_flage = 0;
-                tracking_decision_machine.target_boundary = 1;
-            }
-        }
-
-    }else{
-        cricle_decision_machine.state = 0;
-        cricle_decision_machine.state_locking = 0;
-    }
-}
-
-//巡线函数，根据tracking_decision_machine.target_boundary优先巡线，若发现线丢失，则自动切换线
-void auto_tracking(){
-    // 0 代表优先巡左线
-    if(tracking_decision_machine.target_boundary == 0 && sampled_Lline_num > 5){
-        track_leftline();
-        Mline = L2Mline; 
-        middle_line_length = sampled_Lline_num;
-    }
-    // 1 代表优先巡右线
-    else if(tracking_decision_machine.target_boundary == 1 && sampled_Rline_num > 5){
-        track_rightline();
-        Mline = R2Mline;
-        middle_line_length = sampled_Rline_num;
-    }
-    // 自动兜底逻辑：当指定的目标线丢失（小于等于5个点）时，自动选择较长的一边
-    else if(sampled_Lline_num > sampled_Rline_num && sampled_Lline_num > 5){
-        track_leftline();
-        Mline = L2Mline;
-        middle_line_length = sampled_Lline_num;
-    }
-    else if(sampled_Rline_num > 5)
-    {
-        track_rightline();
-        Mline = R2Mline;
-        middle_line_length = sampled_Rline_num;
-    }
-    else
-    {
-        // 极端情况：双线全部丢失
-        middle_line_length = 0;
-    }
-}
-
-/**
- * @details 左环岛巡线轨迹矫正（直接操作 L2Mline）
- * @note 逻辑：在左边线引导的中线中，找到最靠右（x最大）的点，
- * 将该点以下（0 到 max_index）的所有点 x 坐标强制修正为该最大值，
- * 防止左环岛入库凸起导致小车误判向右大幅度转向。
- */
-void left_path_adjust(void) {
-    // 1. 安全检查
-    if (sampled_Lline_num <= 0) return;
-
-    float max_x = sampled_Lline[0][0]; // 初始化为第一个点（底部）的x
-    int max_index = 0;
-
-    // 2. 遍历左中线，寻找最靠右（x坐标最大）的点
-    // 当左边出现环岛凸起时，中线会被挤向右侧，x值增大
-    for (int i = 0; i < sampled_Lline_num; i++) {
-        if (sampled_Lline[i][0] > max_x) { 
-            max_x = sampled_Lline[i][0];
-            max_index = i;
-        }
-    }
-
-    // 3. 轨迹矫正：将底部到极值点的路径拉直
-    // 强制令小车近端的引导线垂直向上，抵消环岛带来的转向斜率
-    for (int i = 0; i < max_index; i++) {
-        sampled_Lline[i][0] = max_x;
-    }
-}
-
-/**
- * @details 右环岛巡线轨迹矫正（直接操作 R2Mline）
- * @note 逻辑：在右边线引导的中线中，找到最靠左（x最小）的点，
- * 将该点以下（0 到 min_index）的所有点 x 坐标强制修正为该最小值，
- * 防止环岛入库凸起诱导小车过早转向。
- */
-void right_path_adjust(void) {
-    // 1. 安全检查：确保有足够的点进行遍历
-    if (sampled_Rline_num <= 0) return;
-
-    float min_x = sampled_Rline[0][0]; // 初始化为第一个点的x（通常是图像底部）
-    int min_index = 0;
-
-    // 2. 遍历右中线，寻找最靠左（x坐标最小）的点
-    // 在右环岛干扰下，这个点是中线向左偏移最厉害的位置
-    for (int i = 0; i < sampled_Rline_num; i++) {
-        if (sampled_Rline[i][0] < min_x) { 
-            min_x = sampled_Rline[i][0];
-            min_index = i;
-        }
-    }
-
-    // 3. 轨迹矫正：将从底部到极值点的所有 x 坐标替换为 min_x
-    // 这样可以让小车底部的引导斜率变直，不会一头撞向环岛
-    for (int i = 0; i < min_index; i++) {
-        sampled_Rline[i][0] = min_x;
-    }
-}
+// ========================================== 空实现桩函数 ==========================================
+void Cramping(void) {}
+void Element_Handle_Small_Rings(void) {}
+void Element_Handle_Big_Rings(void) {}
+void Element_Judgment_Ramp(void) {}
+void Check_Ring_State_Timeout(void) {}
