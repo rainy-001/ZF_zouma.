@@ -54,16 +54,28 @@ float dangle_Lline[POINTS_MAX_LEN], dangle_Rline[POINTS_MAX_LEN];            // 
 float nms_Lline,nms_Rline;          // 角点值
 int nms_Lline_idx,nms_Rline_idx;    // 索引
 const float M[3][3]={
-{    4.9179f,    0.2310f, -230.4048f},
-{    2.6757f,    1.4620f, -142.2034f},
-{    0.0341f,    0.0022f,   -0.6073f}
+{    6.1678,    0.0952, -258.9408},
+{    3.2515,    1.4700, -165.7452},
+{    0.0404,    0.0003,   -0.6893}
                       };
 
 const float M_inv[3][3]={
-{   -0.0875f,   -0.0558f,   46.2576f},
-{   -0.4916f,    0.7427f,   12.6076f},
-{   -0.0067f,   -0.0004f,    1.0000f}
+{   -0.1102,   -0.0011,   41.6651},
+{   -0.5087,    0.7091,   20.5927},
+{   -0.0067,    0.0002,    1.0000}
                           };
+
+// const float M[3][3]={
+// {    4.9179f,    0.2310f, -230.4048f},
+// {    2.6757f,    1.4620f, -142.2034f},
+// {    0.0341f,    0.0022f,   -0.6073f}
+//                       };
+
+// const float M_inv[3][3]={
+// {   -0.0875f,   -0.0558f,   46.2576f},
+// {   -0.4916f,    0.7427f,   12.6076f},
+// {   -0.0067f,   -0.0004f,    1.0000f}
+//                           };
 
 /* 牛爷爷透视矩阵 - 正向变换（图像坐标 → 鸟瞰坐标） */
 // const float M[3][3] = {
@@ -1030,11 +1042,11 @@ void image_proc() {
     onto = calculate_weighted_offset_angle(Mline, middle_line_length);
 
     // --- 发送二值图像 + 边线到上位机（逐飞助手） ---
-    static uint8_t L_buf[120][2], R_buf[120][2], M_buf[120][2];
-    for (int i = 0; i < sampled_Lline_num && i < 120; i++) { L_buf[i][0] = (uint8_t)sampled_Lline[i][0]; L_buf[i][1] = (uint8_t)sampled_Lline[i][1]; }
-    for (int i = 0; i < sampled_Rline_num && i < 120; i++) { R_buf[i][0] = (uint8_t)sampled_Rline[i][0]; R_buf[i][1] = (uint8_t)sampled_Rline[i][1]; }
-    for (int i = 0; i < middle_line_length && i < 120; i++) { M_buf[i][0] = (uint8_t)Mline[i][0]; M_buf[i][1] = (uint8_t)Mline[i][1]; }
-    gray_img_with_centerline_transmitter(bin_img_data, IMG_W, IMG_H, L_buf, sampled_Lline_num, R_buf, sampled_Rline_num, M_buf, middle_line_length, false, false);
+    // static uint8_t L_buf[120][2], R_buf[120][2], M_buf[120][2];
+    // for (int i = 0; i < sampled_Lline_num && i < 120; i++) { L_buf[i][0] = (uint8_t)sampled_Lline[i][0]; L_buf[i][1] = (uint8_t)sampled_Lline[i][1]; }
+    // for (int i = 0; i < sampled_Rline_num && i < 120; i++) { R_buf[i][0] = (uint8_t)sampled_Rline[i][0]; R_buf[i][1] = (uint8_t)sampled_Rline[i][1]; }
+    // for (int i = 0; i < middle_line_length && i < 120; i++) { M_buf[i][0] = (uint8_t)Mline[i][0]; M_buf[i][1] = (uint8_t)Mline[i][1]; }
+    // gray_img_with_centerline_transmitter(bin_img_data, IMG_W, IMG_H, L_buf, sampled_Lline_num, R_buf, sampled_Rline_num, M_buf, middle_line_length, false, false);
 
     // if (udp.is_enable()) {
     //     // A. 发送原始 320x160 彩色图像 (用于确认识别结果)
