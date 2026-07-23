@@ -23,7 +23,8 @@ float pid_l_integral_max = 60.0f, pid_l_integral_min = -60.0f;
 
 float onto_kp = 0.0f, onto_kp2 = 0.65f, onto_kd = 4.0f, onto_limit = 45.0f;
 
-std::string received;
+// TCP 远程调参已废弃
+// std::string received;
 
 /**
  * @brief 从配置文件中读取参数并设置控制器
@@ -316,128 +317,34 @@ void param_print() {
     fflush(stdout);
 }
 
-/**
- * @brief 处理 READ 命令：从文件重新加载参数并更新控制器
- */
-void handleReadCommand() {
-    param_loading_from_file("/home/root/car_config.txt");
-    param_setting();
-    printf("已从文件重新加载参数\n");
-    param_print();
-}
+// TCP 远程调参已废弃
+// /**
+//  * @brief 处理 READ 命令：从文件重新加载参数并更新控制器
+//  */
+// void handleReadCommand() {
+//     param_loading_from_file("/home/root/car_config.txt");
+//     param_setting();
+//     printf("已从文件重新加载参数\n");
+//     param_print();
+// }
 
-/**
- * @brief 处理 WRITE 命令：将当前参数发送回去
- */
-bool handleWriteCommand(TCPClient& client) {
-    if(write_param_into_file()){
-        client.sendFormattedData("b0:%.6f\n", lardc_r_b0);
-        client.sendFormattedData("wc:%.6f\n", lardc_r_wc);
-        client.sendFormattedData("w0:%.6f\n", lardc_r_w0);
-        client.sendFormattedData("r:%.6f\n", lardc_r_r);
-        client.sendFormattedData("h:%.6f\n", lardc_r_h);
-        client.sendFormattedData("kp:%.6f\n", onto_kp);
-        client.sendFormattedData("kp2:%.6f\n", onto_kp2);
-        client.sendFormattedData("kd:%.6f\n", onto_kd);
-        client.sendFormattedData("limit:%.6f\n", onto_limit);
-        client.sendFormattedData("pid_kp:%.6f\n", pid_r_kp);
-        client.sendFormattedData("pid_ki:%.6f\n", pid_r_ki);
-        client.sendFormattedData("pid_kd:%.6f\n", pid_r_kd);
-        printf("已发送当前参数\n");
-        return true;
-    }
-    return false;
-}
+// /**
+//  * @brief 处理 WRITE 命令：将当前参数发送回去
+//  */
+// bool handleWriteCommand(TCPClient& client) {
+//     if(write_param_into_file()){
+//         client.sendFormattedData("b0:%.6f\n", lardc_r_b0);
+//         // ... (已废弃) ...
+//         printf("已发送当前参数\n");
+//         return true;
+//     }
+//     return false;
+// }
 
-/**
- * @brief 解析接收到的参数并更新对应的全局变量
- * @param line 接收到的数据行（格式如 "b0:4.000000"）
- * @return true 解析成功并更新，false 解析失败
- */
-bool parseAndUpdateParameter(const std::string& line) {
-    // 查找冒号分隔符
-    size_t colon_pos = line.find(':');
-    if (colon_pos == std::string::npos) {
-        return false;
-    }
-    std::string key = line.substr(0, colon_pos);
-    std::string value_str = line.substr(colon_pos + 1);
-    
-    // 去除可能的空格和换行符
-    key.erase(0, key.find_first_not_of(" \t\r\n"));
-    key.erase(key.find_last_not_of(" \t\r\n") + 1);
-    value_str.erase(0, value_str.find_first_not_of(" \t\r\n"));
-    value_str.erase(value_str.find_last_not_of(" \t\r\n") + 1);
-    
-    float value = std::stof(value_str);
-    
-    // 根据 key 更新对应的参数
-    if (key == "b0") {
-        lardc_r_b0 = value;
-        lardc_l_b0 = value;
-        printf("更新 b0: %.6f\n", value);
-    }
-    else if (key == "wc") {
-        lardc_r_wc = value;
-        lardc_l_wc = value;
-        printf("更新 wc: %.6f\n", value);
-    }
-    else if (key == "w0") {
-        lardc_r_w0 = value;
-        lardc_l_w0 = value;
-        printf("更新 w0: %.6f\n", value);
-    }
-    else if (key == "r") {
-        lardc_r_r = value;
-        lardc_l_r = value;
-        printf("更新 r: %.6f\n", value);
-    }
-    else if (key == "h") {
-        lardc_r_h = value;
-        lardc_l_h = value;
-        printf("更新 h: %.6f\n", value);
-    }
-    else if (key == "kp") {
-        onto_kp = value;
-        printf("更新 onto_kp: %.6f\n", value);
-    }
-    else if (key == "kp2") {
-        onto_kp2 = value;
-        printf("更新 onto_kp2: %.6f\n", value);
-    }
-    else if (key == "kd") {
-        onto_kd = value;
-        printf("更新 onto_kd: %.6f\n", value);
-    }
-    else if (key == "limit") {
-        onto_limit = value;
-        printf("更新 onto_limit: %.6f\n", value);
-    }
-    else if (key == "pid_kp") {
-        pid_r_kp = value;
-        pid_l_kp = value;
-        pid_r.set_index(pid_r_kp, pid_r_kd, pid_r_ki, pid_r_ts);
-        pid_l.set_index(pid_l_kp, pid_l_kd, pid_l_ki, pid_l_ts);
-        printf("更新 PID Kp: %.6f\n", value);
-    }
-    else if (key == "pid_ki") {
-        pid_r_ki = value;
-        pid_l_ki = value;
-        pid_r.set_index(pid_r_kp, pid_r_kd, pid_r_ki, pid_r_ts);
-        pid_l.set_index(pid_l_kp, pid_l_kd, pid_l_ki, pid_l_ts);
-        printf("更新 PID Ki: %.6f\n", value);
-    }
-    else if (key == "pid_kd") {
-        pid_r_kd = value;
-        pid_l_kd = value;
-        pid_r.set_index(pid_r_kp, pid_r_kd, pid_r_ki, pid_r_ts);
-        pid_l.set_index(pid_l_kp, pid_l_kd, pid_l_ki, pid_l_ts);
-        printf("更新 PID Kd: %.6f\n", value);
-    }
-    else {
-        printf("未知参数: %s\n", key.c_str());
-        return false;
-    }
-    
-    return true;
-}
+// /**
+//  * @brief 解析接收到的参数并更新对应的全局变量 (已废弃)
+//  */
+// bool parseAndUpdateParameter(const std::string& line) {
+//     // ... 所有参数解析逻辑已废弃 ...
+//     return false;
+// }

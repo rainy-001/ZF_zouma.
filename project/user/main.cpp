@@ -8,11 +8,12 @@ int main()
     // printf("电机驱动初始化完成\n");
 
     car_init();
-    TCPClient client;
-    if (!client.connect("192.168.184.60", 8086)) {
-        return -1;
-    }
-     onto_pd_control_enable = 1;
+    // TCP远程调参已废弃，小车不再需要远程调参
+    // TCPClient client;
+    // if (!client.connect("192.168.184.60", 8086)) {
+    //     return -1;
+    // }
+    onto_pd_control_enable = 1;
 
     //------------ 初始化陀螺仪 ------------
     // printf("------------初始化陀螺仪------------\n");
@@ -39,26 +40,21 @@ int main()
         // image_proc_handler() 以 20ms(50Hz) 固定周期运行, 优先级96
         // onto → pid_contol_handle(5ms) → onto_control → LADRC(1ms) → 差速转向
 
-        // ==================== TCP远程调参通信 ====================
-        if (client.receiveLine(received, 100)) {
-            // 去除末尾换行符
-            received.erase(received.find_last_not_of("\r\n") + 1);
-
-            printf("收到: %s\n", received.c_str());
-
-            if (received == "WRITE") {
-                handleWriteCommand(client);
-            }
-            else if (received == "READ") {
-                handleReadCommand();
-            }
-            else {
-                // 尝试解析参数更新
-               parseAndUpdateParameter(received);
-            }
-        }
-
-        client.sendFormattedData("Onto_control,yaw,speed_l,speed_r,l_pwm,r_pwm:%f,%f,%f,%f,%d,%d\r\n",onto_control,ahrs.getYaw(),left_speed,right_speed,speed_to_pwm_l,speed_to_pwm_r);
+        // ==================== TCP远程调参通信 (已废弃) ====================
+        // if (client.receiveLine(received, 100)) {
+        //     received.erase(received.find_last_not_of("\r\n") + 1);
+        //     printf("收到: %s\n", received.c_str());
+        //     if (received == "WRITE") {
+        //         handleWriteCommand(client);
+        //     }
+        //     else if (received == "READ") {
+        //         handleReadCommand();
+        //     }
+        //     else {
+        //         parseAndUpdateParameter(received);
+        //     }
+        // }
+        // client.sendFormattedData("Onto_control,yaw,speed_l,speed_r,l_pwm,r_pwm:%f,%f,%f,%f,%d,%d\r\n",onto_control,ahrs.getYaw(),left_speed,right_speed,speed_to_pwm_l,speed_to_pwm_r);
 
 
     //菜单执行必需
