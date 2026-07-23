@@ -16,12 +16,13 @@ static int red_lost_count = 0;       // 连续丢失帧计数（迟滞用）
 #define RED_LOST_HYSTERESIS 5        // 连续丢失N帧后才清空检测状态
 
 // 红色检测参数（可调）
-int red_r_thresh = 100;
-int red_rg_diff = 30;
-int red_rb_diff = 10;
-int red_min_area = 30;
-int red_confirm_frames = 3;          // 连续确认帧数（3帧≈60ms，高速下更快响应）
-float avoid_offset_angle = 8.0;      // 避障绕行偏置角度（度），默认 8.0
+int red_r_thresh = 130;              // R 通道最低值（提高，过滤反光）
+int red_rg_diff = 40;                // R-G 最小差值（提高，过滤橙色/黄色赛道）
+int red_rb_diff = 30;                // R-B 最小差值（提高，过滤暗色干扰）
+int red_min_area = 40;               // 最小色块面积（提高，过滤散点）
+int red_confirm_frames = 4;          // 连续确认帧数（4帧，过滤闪烁）
+float avoid_offset_angle = 4.0;      // 避障绕行偏置角度（度），默认 4.0
+int red_obstacle_passed = 0;         // 已绕过标志（1=已绕过，不再检测红色）
 /* ======================== 红色色块避障变量 ======================== */
 /******************图像变量*/
 //图像
@@ -1038,13 +1039,13 @@ void image_proc() {
     //   onto < 0 → 右轮加速/左轮减速 → 右拐
     // 色块在左半边(center_x < 80) → 需要右拐（onto 变大，+offset）
     // 色块在右半边(center_x >= 80)→ 需要左拐（onto 变小，−offset）
-    if (red_block_detected) {
+    if (red_block_detected && red_block_center_x >= 0 && red_block_center_y >= 80) {
         if (red_block_center_x < IMG_W / 2)
             onto = +avoid_offset_angle;   // 色块在左 → 右拐远离
         else
             onto = -avoid_offset_angle;   // 色块在右 → 左拐远离
 
-        printf("[AVOID] onto=%.1f cx=%d\n", onto, red_block_center_x);
+        printf("[AVOID] onto=%.1f cx=%d cy=%d\n", onto, red_block_center_x, red_block_center_y);
     }
 
     // if (udp.is_enable()) {
@@ -1139,21 +1140,6 @@ void element_status() {
     // 只有在非处理阶段，才允许进入检测
     if (!tracking_decision_machine.element_processing_flage) 
     {
-        // --- ★ 避障检测（优先级最高，不受冷却限制） ---
-        if (red_block_detected) {
-            if (red_block_center_x < IMG_W / 2) {
-                // 色块在图像左半边 → 巡右线绕行
-                tracking_decision_machine.state = 4; // 避障状态
-                tracking_decision_machine.target_boundary = 1;
-            } else {
-                // 色块在图像右半边 → 巡左线绕行
-                tracking_decision_machine.state = 4;
-                tracking_decision_machine.target_boundary = 0;
-            }
-            tracking_decision_machine.element_processing_flage = 1;
-            return;
-        }
-
         // --- 2. 十字检测 (不受冷却限制) ---
         // if(sampled_Lline_num > LOST_LINE && sampled_Rline_num > LOST_LINE) {
             // if(nms_Lline > CORNER_ANGLE_THRE && nms_Rline > CORNER_ANGLE_THRE) {
@@ -1540,6 +1526,9 @@ void right_path_adjust(void) {
  * @return 1: 检测到, 0: 未检测到
  */
 int detect_red_block(const cv::Mat& rgb_frame) {
+    // 已经绕过 → 不再检测
+    if (red_obstacle_passed) return 0;
+
     using namespace cv;
 
     // 重置检测结果
@@ -1571,11 +1560,12 @@ int detect_red_block(const cv::Mat& rgb_frame) {
         if (red_block_detected) {
             red_lost_count++;
             if (red_lost_count >= RED_LOST_HYSTERESIS) {
+                red_obstacle_passed = 1;  // ★ 绕过成功，永久禁用红色检测
                 red_block_detected = 0;
                 red_block_center_x = -1;
                 red_block_center_y = -1;
                 red_lost_count = 0;
-                printf("[OBSTACLE] lost for %d frames, cleared\n", RED_LOST_HYSTERESIS);
+                printf("[OBSTACLE] passed, red detection disabled forever\n");
             }
         }
         return 0;
@@ -1610,8 +1600,12 @@ int detect_red_block(const cv::Mat& rgb_frame) {
         if (red_block_detected) {
             red_lost_count++;
             if (red_lost_count >= RED_LOST_HYSTERESIS) {
+                red_obstacle_passed = 1;  // ★ 绕过成功
                 red_block_detected = 0;
-                printf("[OBSTACLE] lost for %d frames, cleared\n", red_lost_count);
+                red_block_center_x = -1;
+                red_block_center_y = -1;
+                red_lost_count = 0;
+                printf("[OBSTACLE] passed, red detection disabled forever\n");
             }
         }
         return 0;
@@ -1647,10 +1641,11 @@ int detect_red_block(const cv::Mat& rgb_frame) {
 void obstacle_process(void) {
     if (tracking_decision_machine.state == 4) {
         if (!red_block_detected) {
-            // 色块消失 → 恢复正常巡线
+            // 色块消失 → 绕过成功，恢复正常巡线，并永久禁用红色检测
+            red_obstacle_passed = 1;
             tracking_decision_machine.element_processing_flage = 0;
             tracking_decision_machine.state = 0;
-            printf("[OBSTACLE] cleared, back to normal\n");
+            printf("[OBSTACLE] passed, red detection disabled forever\n");
         }
         // 色块还在 → 持续避障，target_boundary 不变
     }

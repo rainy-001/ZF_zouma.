@@ -172,6 +172,7 @@ extern int   red_rb_diff;            // R-B 最小差值，默认 10
 extern int   red_min_area;           // 最小色块面积，默认 30
 extern int   red_confirm_frames;     // 确认帧数，默认 6
 extern float avoid_offset_angle;     // 避障绕行偏置角度（度），默认 15.0
+extern int red_obstacle_passed;      // 已绕过标志（1=已绕过，不再检测）
 
 // 红色色块检测函数
 int detect_red_block(const cv::Mat& rgb_frame);
