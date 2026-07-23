@@ -2,64 +2,25 @@
 
 int main()
 {
-    //最小初始化：电机硬件（不启动控制线程）
-    // printf("------------初始化电机驱动------------\n");
-    // motor_init();
-    // printf("电机驱动初始化完成\n");
+    // ==================== 等待按键发车（放在 car_init 之前, 所有线程尚未启动, 电机绝不可能转） ====================
+    printf("\n========== 按 OK 键发车 ==========\n");
+
+    while (1) {
+        key_manager.scan_keys();                        // 手动扫描按键（线程尚未启动）
+        MenuAction action = key_manager.get_menu_action();
+        if (action == MENU_OK) break;
+        usleep(10000);                                  // 10ms
+    }
+
+    printf("========== 发车！==========\n");
+    // ====================================================
 
     car_init();
-    // TCP远程调参已废弃，小车不再需要远程调参
-    // TCPClient client;
-    // if (!client.connect("192.168.184.60", 8086)) {
-    //     return -1;
-    // }
     onto_pd_control_enable = 1;
 
-    //------------ 初始化陀螺仪 ------------
-    // printf("------------初始化陀螺仪------------\n");
-    // imu963r.init();
-    // system_delay_ms(100);
-
-
-    //菜单系统/定时系统初始化包含在car_init()中，确保在所有硬件初始化完成后再启动菜单系统和定时器,调参时注释此处
-    // if (key_scan.init_ms(KEY_SCAN_PERIOD, key_scan_handler, 95, true) != 0)
-    // {
-    //     printf("定时器初始化失败\n");
-    //     return false;
-    // }
-    // else
-    // {
-    //     printf("key scaning thread init successfully,period: %dms\n", KEY_SCAN_PERIOD);
-    // }
-
-    // menu_system.init();
-
-
     while (true) {
-        // ==================== 图像处理已移至定时器线程 ====================
-        // image_proc_handler() 以 20ms(50Hz) 固定周期运行, 优先级96
-        // onto → pid_contol_handle(5ms) → onto_control → LADRC(1ms) → 差速转向
-
-        // ==================== TCP远程调参通信 (已废弃) ====================
-        // if (client.receiveLine(received, 100)) {
-        //     received.erase(received.find_last_not_of("\r\n") + 1);
-        //     printf("收到: %s\n", received.c_str());
-        //     if (received == "WRITE") {
-        //         handleWriteCommand(client);
-        //     }
-        //     else if (received == "READ") {
-        //         handleReadCommand();
-        //     }
-        //     else {
-        //         parseAndUpdateParameter(received);
-        //     }
-        // }
-        // client.sendFormattedData("Onto_control,yaw,speed_l,speed_r,l_pwm,r_pwm:%f,%f,%f,%f,%d,%d\r\n",onto_control,ahrs.getYaw(),left_speed,right_speed,speed_to_pwm_l,speed_to_pwm_r);
-
-
-    //菜单执行必需
         menu_system.menu_system();
-        usleep(5000);  // 5ms, 主循环≈200Hz, 保证TCP和菜单响应
+        usleep(5000);  // 5ms, 主循环≈200Hz
     }
 
     return 0;
