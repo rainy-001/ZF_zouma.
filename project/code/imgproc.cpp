@@ -1,4 +1,5 @@
 #include "imgproc.hpp"
+#include "zebra_detect.hpp"
 using namespace cv;
 
 /*决策变量******************/
@@ -1100,9 +1101,13 @@ void image_proc() {
     // }
     // printf("onto:   %f     ,middle_line_length: %d    \r",onto,middle_line_length);
 
+    // ==================== 斑马线检测（发车/停车判断） ====================
+    detect_zebra(bin_img_data, IMG_W, IMG_H);
+
     // 调试要看状态机请解注释这行
     // 圆环状态机已废弃，移除 cricle_decision_machine.state 打印
-    printf("state:%d ,left:%f  ,right:%f  \r   ",tracking_decision_machine.state,nms_Lline, nms_Rline);
+    printf("state:%d ,left:%f  ,right:%f  zebra:%d\r   ",
+           tracking_decision_machine.state, nms_Lline, nms_Rline, zebra_count);
 
 }
 //状态机初始化

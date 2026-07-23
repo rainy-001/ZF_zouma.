@@ -287,6 +287,11 @@ void pid_contol_handle()
         onto_control = pid_angle.compute(onto, 0.0f);
     } else {
         onto_control = 0;
+        // 未使能时直接停止电机，不发车
+        if (control_model == 0) {
+            motor_set_speed(0, 0);
+        }
+        return;
     }
 
     // PID 模式：速度闭环 + 差速转向
@@ -304,6 +309,9 @@ bool car_init(){
     // 导入基础参数并设置
     param_loading_from_file("/home/root/car_config.txt");
     param_print();
+
+    cruising_speed = 0;  // 初始速度为零，等待斑马线确认后才设置 CRUISING_SPEED
+
     // 1. 初始化显示屏
     printf("------------初始化显示屏-----------\n");
     ips200.init("/dev/fb0");
