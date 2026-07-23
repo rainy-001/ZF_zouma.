@@ -6,6 +6,23 @@ float onto = 0.0f;            // 最终处理方向，已限制幅度在-30~30.0
 float angle_compensation = 0; // 方向补偿量(静态最中间偏差)
 int middle_line_length = 0;   // 中线长度
 float max_angle = 0.0f;       // 最大角点值,用于调试
+
+/* ======================== 红色色块避障变量 ======================== */
+int red_block_detected = 0;         // 0=未检测到, 1=检测到
+int red_block_center_x = -1;        // 色块中心 x 坐标
+int red_block_center_y = -1;        // 色块中心 y 坐标
+static int red_consecutive_count = 0; // 连续检测帧计数
+static int red_lost_count = 0;       // 连续丢失帧计数（迟滞用）
+#define RED_LOST_HYSTERESIS 5        // 连续丢失N帧后才清空检测状态
+
+// 红色检测参数（可调）
+int red_r_thresh = 100;
+int red_rg_diff = 30;
+int red_rb_diff = 10;
+int red_min_area = 30;
+int red_confirm_frames = 3;          // 连续确认帧数（3帧≈60ms，高速下更快响应）
+float avoid_offset_angle = 8.0;      // 避障绕行偏置角度（度），默认 8.0
+/* ======================== 红色色块避障变量 ======================== */
 /******************图像变量*/
 //图像
 Mat frame_color;                // 用于处理的图像帧
@@ -1003,6 +1020,9 @@ void image_proc() {
 
     line_process(120, 120 / 2);
 
+    // ★ 红色色块避障检测（在边线提取后调用，可利用边线数据验证）
+    detect_red_block(frame_resized);
+
     element_status();
     no_element_process();
     crossing_process();
@@ -1011,6 +1031,21 @@ void image_proc() {
 
     max_angle = std::max(nms_Lline, nms_Rline);
     onto = calculate_weighted_offset_angle(Mline, middle_line_length);
+
+    // ★★★ 避障：直接在 onto 上施加固定角度偏置，强制远离障碍物 ★★★
+    // 注意 onto 的符号含义：
+    //   onto > 0 → 左轮加速/右轮减速 → 左拐
+    //   onto < 0 → 右轮加速/左轮减速 → 右拐
+    // 色块在左半边(center_x < 80) → 需要右拐（onto 变大，+offset）
+    // 色块在右半边(center_x >= 80)→ 需要左拐（onto 变小，−offset）
+    if (red_block_detected) {
+        if (red_block_center_x < IMG_W / 2)
+            onto = +avoid_offset_angle;   // 色块在左 → 右拐远离
+        else
+            onto = -avoid_offset_angle;   // 色块在右 → 左拐远离
+
+        printf("[AVOID] onto=%.1f cx=%d\n", onto, red_block_center_x);
+    }
 
     // if (udp.is_enable()) {
     //     // A. 发送原始 320x160 彩色图像 (用于确认识别结果)
@@ -1104,6 +1139,21 @@ void element_status() {
     // 只有在非处理阶段，才允许进入检测
     if (!tracking_decision_machine.element_processing_flage) 
     {
+        // --- ★ 避障检测（优先级最高，不受冷却限制） ---
+        if (red_block_detected) {
+            if (red_block_center_x < IMG_W / 2) {
+                // 色块在图像左半边 → 巡右线绕行
+                tracking_decision_machine.state = 4; // 避障状态
+                tracking_decision_machine.target_boundary = 1;
+            } else {
+                // 色块在图像右半边 → 巡左线绕行
+                tracking_decision_machine.state = 4;
+                tracking_decision_machine.target_boundary = 0;
+            }
+            tracking_decision_machine.element_processing_flage = 1;
+            return;
+        }
+
         // --- 2. 十字检测 (不受冷却限制) ---
         // if(sampled_Lline_num > LOST_LINE && sampled_Rline_num > LOST_LINE) {
             // if(nms_Lline > CORNER_ANGLE_THRE && nms_Rline > CORNER_ANGLE_THRE) {
@@ -1477,5 +1527,131 @@ void right_path_adjust(void) {
     // 这样可以让小车底部的引导斜率变直，不会一头撞向环岛
     for (int i = 0; i < min_index; i++) {
         sampled_Rline[i][0] = min_x;
+    }
+}
+
+/* ================================================================
+ *                    红色色块避障 — 检测函数
+ * ================================================================ */
+
+/**
+ * @brief 红色色块检测（基于 RGB 阈值 + 连通域分析）
+ * @param rgb_frame 160x120 BGR 彩色帧（cv::Mat）
+ * @return 1: 检测到, 0: 未检测到
+ */
+int detect_red_block(const cv::Mat& rgb_frame) {
+    using namespace cv;
+
+    // 重置检测结果
+    red_block_center_x = -1;
+    red_block_center_y = -1;
+
+    // 1. 创建红色掩码
+    Mat red_mask(IMG_H, IMG_W, CV_8UC1, Scalar(0));
+    for (int y = 0; y < IMG_H; y++) {
+        for (int x = 0; x < IMG_W; x++) {
+            Vec3b pixel = rgb_frame.at<Vec3b>(y, x);
+            uint8_t r = pixel[2];   // BGR → R
+            uint8_t g = pixel[1];   // BGR → G
+            uint8_t b = pixel[0];   // BGR → B
+            // RGB 红色阈值
+            if (r > red_r_thresh && r > g + red_rg_diff && r > b + red_rb_diff) {
+                red_mask.at<uchar>(y, x) = 255;
+            }
+        }
+    }
+
+    // 2. 连通域分析
+    Mat labels, stats, centroids;
+    int numLabels = connectedComponentsWithStats(red_mask, labels, stats, centroids, 8, CV_32S);
+
+    if (numLabels <= 1) {
+        // 未检测到红色区域 → 迟滞处理
+        red_consecutive_count = 0;
+        if (red_block_detected) {
+            red_lost_count++;
+            if (red_lost_count >= RED_LOST_HYSTERESIS) {
+                red_block_detected = 0;
+                red_block_center_x = -1;
+                red_block_center_y = -1;
+                red_lost_count = 0;
+                printf("[OBSTACLE] lost for %d frames, cleared\n", RED_LOST_HYSTERESIS);
+            }
+        }
+        return 0;
+    }
+
+    // 3. 筛选有效色块（仅按面积过滤，不做边线验证避免坐标系不匹配）
+    struct BlockInfo {
+        int center_x, center_y, area;
+    };
+    std::vector<BlockInfo> validBlocks;
+
+    for (int i = 1; i < numLabels; i++) {
+        int area = stats.at<int>(i, CC_STAT_AREA);
+        if (area < red_min_area) continue;  // 面积太小，跳过
+
+        int left   = stats.at<int>(i, CC_STAT_LEFT);
+        int top    = stats.at<int>(i, CC_STAT_TOP);
+        int width  = stats.at<int>(i, CC_STAT_WIDTH);
+        int height = stats.at<int>(i, CC_STAT_HEIGHT);
+
+        int cx = left + width / 2;
+        int cy = top + height / 2;
+
+        // 仅在图像下半部分（cy > 30）接受，避免远景误检
+        if (cy < 30) continue;
+
+        validBlocks.push_back({cx, cy, area});
+    }
+
+    if (validBlocks.empty()) {
+        red_consecutive_count = 0;
+        if (red_block_detected) {
+            red_lost_count++;
+            if (red_lost_count >= RED_LOST_HYSTERESIS) {
+                red_block_detected = 0;
+                printf("[OBSTACLE] lost for %d frames, cleared\n", red_lost_count);
+            }
+        }
+        return 0;
+    }
+
+    // 4. 选取最下方的色块（离车最近）
+    BlockInfo target = validBlocks[0];
+    for (auto& b : validBlocks) {
+        if (b.center_y > target.center_y) target = b;
+    }
+
+    // 5. 连续帧确认
+    red_consecutive_count++;
+    if (red_consecutive_count >= red_confirm_frames) {
+        red_block_detected = 1;
+        red_block_center_x = target.center_x;
+        red_block_center_y = target.center_y;
+        printf("[OBSTACLE] DETECTED! center=(%d,%d) area=%d\n",
+               red_block_center_x, red_block_center_y, target.area);
+    }
+
+    return red_block_detected;
+}
+
+/* ================================================================
+ *                    红色色块避障 — 状态处理函数
+ * ================================================================ */
+
+/**
+ * @brief 避障状态处理（state = 4）
+ * @details 当红色色块消失时，正常退出避障状态回到直道巡线
+ */
+void obstacle_process(void) {
+    if (tracking_decision_machine.state == 4) {
+        if (!red_block_detected) {
+            // 色块消失 → 恢复正常巡线
+            tracking_decision_machine.element_processing_flage = 0;
+            tracking_decision_machine.state = 0;
+            printf("[OBSTACLE] cleared, back to normal\n");
+        }
+        // 色块还在 → 持续避障，target_boundary 不变
     }
 }

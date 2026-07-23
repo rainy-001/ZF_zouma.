@@ -27,7 +27,7 @@ typedef struct{
     float max_angle;            //最大角点值
     
 
-    uint8_t state;                    //当前状态，0直道，1十字，2左圆环，3右圆环
+    uint8_t state;                    //当前状态，0直道，1十字，2左圆环，3右圆环, 4避障
     uint8_t element_processing_flage; //处理位，检测到元素后置1，处理完成后清0，防止重复检测状态位乱飞
     uint32_t state_time_locking;
 
@@ -158,4 +158,22 @@ void right_path_adjust(void);
 
 void supplement_line(float pts_in[][2],int* num,int corner_index,float dist);   //补线
 void load_undistort_map(void);
+
+/* ======================== 红色色块避障 ======================== */
+// 红色色块检测结果
+extern int red_block_detected;       // 0=未检测到, 1=检测到
+extern int red_block_center_x;       // 色块中心 x 坐标（160x120 坐标系）
+extern int red_block_center_y;       // 色块中心 y 坐标
+
+// 红色检测参数（可调）
+extern int   red_r_thresh;           // R 通道最低值，默认 100
+extern int   red_rg_diff;            // R-G 最小差值，默认 30
+extern int   red_rb_diff;            // R-B 最小差值，默认 10
+extern int   red_min_area;           // 最小色块面积，默认 30
+extern int   red_confirm_frames;     // 确认帧数，默认 6
+extern float avoid_offset_angle;     // 避障绕行偏置角度（度），默认 15.0
+
+// 红色色块检测函数
+int detect_red_block(const cv::Mat& rgb_frame);
+/* ======================== 红色色块避障 ======================== */
 #endif
