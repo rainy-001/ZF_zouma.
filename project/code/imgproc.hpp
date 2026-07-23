@@ -27,7 +27,7 @@ typedef struct{
     float max_angle;            //最大角点值
     
 
-    uint8_t state;                    //当前状态，0直道，1十字，2左圆环，3右圆环, 4避障
+    uint8_t state;                    //当前状态，0直道，1十字，4避障 (2左圆环/3右圆环已废弃)
     uint8_t element_processing_flage; //处理位，检测到元素后置1，处理完成后清0，防止重复检测状态位乱飞
     uint32_t state_time_locking;
 
@@ -42,14 +42,14 @@ typedef struct{
     bool is_cooling;                  // 冷却状态标志
     float cooldown_threshold_sec;    // 冷却时间阈值（默认5.0s）
 } Tracking_Decision_Machine_TypeDef;
-//圆环状态机
-typedef struct {
-    uint8_t state;              //0初始状态，1进圆环路口，2圆环路口未进环岛，3环岛中无岔路部分，4出环岛路口
-    uint8_t state_locking;      //状态锁定，防止重判乱飞,0未上锁，1上锁
-    uint8_t side;               //圆环边，2左边，3右边，0初始
-    float start_angle;          //入环时角度
-    float current_angle; 
-} Circle_Tracking_Machine_TypeDef;
+//圆环状态机 (已废弃，小车不再需要进入圆环)
+// typedef struct {
+//     uint8_t state;              //0初始状态，1进圆环路口，2圆环路口未进环岛，3环岛中无岔路部分，4出环岛路口
+//     uint8_t state_locking;      //状态锁定，防止重判乱飞,0未上锁，1上锁
+//     uint8_t side;               //圆环边，2左边，3右边，0初始
+//     float start_angle;          //入环时角度
+//     float current_angle; 
+// } Circle_Tracking_Machine_TypeDef;
 
 
 #define PI 3.14159265358979323846f
@@ -78,7 +78,7 @@ typedef struct {
 /*-------------------------角点识别参数-------------------------*/
 #define CORNER_ANGLE_THRE      75.0f           //角点角度阈值
 #define CORNER_THRE_MAX        96.0f          //十字角点最大阈值
-#define CIRCLE_ANGLE_THRE      100.0f          //圆环角度阈值
+// #define CIRCLE_ANGLE_THRE      100.0f          //圆环角度阈值 (已废弃)
 #define STRAIGHT_ROAD_THRE     50               
 #define LOST_LINE              10
 /*------------------------正常巡线状态参数------------------------*/
@@ -149,11 +149,11 @@ void track_rightline(float dist=ROAD_W*M2PIX/2);   //从右边线跟踪中线
 void element_status();
 void no_element_process();
 void crossing_process();
-void circle_process();
+// void circle_process();  // 圆环处理函数，已废弃
 void auto_tracking();
 
-void left_path_adjust(void);
-void right_path_adjust(void);
+// void left_path_adjust(void);  // 圆环辅助函数，已废弃
+// void right_path_adjust(void); // 圆环辅助函数，已废弃
 
 
 void supplement_line(float pts_in[][2],int* num,int corner_index,float dist);   //补线
