@@ -942,7 +942,7 @@ float calculate_weighted_offset_angle(float (*Mline)[2], int num) {
     const float weights[15] = {
         1.5f,  1.5f,  1.5f,  1.5f,  1.5f,  // 近处：低权重，减少抖动
         1.1f,  1.1f,  1.1f,  1.1f,  1.1f,  // 中间：过渡区
-        0.8f,   0.8f,   0.8f,  0.8f,   0.8f   // 远处：高权重，提供前瞻预判
+        1.2f,    1.2f,    1.2f,   1.2f,   1.2f  // 远处：高权重，提供前瞻预判
     };
 
     // 情况 A: 点数不足，直接返回上一帧

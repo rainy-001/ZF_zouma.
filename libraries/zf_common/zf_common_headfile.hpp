@@ -21,14 +21,14 @@
 * 许可证副本在 libraries 文件夹下 即该文件夹下的 LICENSE 文件
 * 欢迎各位使用并传播本程序 但修改内容时必须保留逐飞科技的版权声明（即本声明）
 *
-* 文件名称          main
+* 文件名称          zf_common_headfile
 * 公司名称          成都逐飞科技有限公司
 * 适用平台          LS2K0300
-* 店铺链接          https://seekfree.taobao.com/
 *
 * 修改记录
 * 日期              作者           备注
 * 2025-12-27        大W            first version
+* 2026-07-25        Cline         极简版 - 仅保留WASD遥控所需模块
 ********************************************************************************************************************/
 
 #ifndef _zf_common_headfile_h_
@@ -55,47 +55,31 @@
 #include "zf_driver_tcp_client.hpp"
 //===================================================芯片外设驱动层===================================================
 
-//===================================================外接设备驱动层===================================================
-#include "zf_device_imu.hpp"
-#include "zf_device_ips200_fb.hpp"
-#include "zf_device_uvc.hpp"
-#include "zf_device_dl1x.hpp"
+//======== 以下设备驱动已注释（极简遥控版不需要）========
+// #include "zf_device_imu.hpp"
+// #include "zf_device_ips200_fb.hpp"
+// #include "zf_device_uvc.hpp"
+// #include "zf_device_dl1x.hpp"
 
-//===================================================外接设备驱动层===================================================
+//======== 以下组件层已注释（极简遥控版不需要）========
+// #include "seekfree_assistant.hpp"
+// #include "seekfree_assistant_interface.hpp"
 
+//======== 以下外部组件库已注释（极简遥控版不需要）========
+// #include "net.h"
+// #include <opencv2/opencv.hpp>
+// #include <opencv2/imgproc/imgproc.hpp>
+// #include <opencv2/highgui/highgui.hpp>
+// #include <iostream>
+// #include <fstream>
+// #include <thread>
+// #include <chrono>
+// #include <atomic>
 
-//===================================================应用组件层===================================================
-#include "seekfree_assistant.hpp"
-#include "seekfree_assistant_interface.hpp"
-//===================================================应用组件层===================================================
-
-
-//===================================================外部组件库===================================================
-#include "net.h" // for ncnn
-#include <opencv2/opencv.hpp>
-#include <opencv2/imgproc/imgproc.hpp>  // for cv::cvtColor
-#include <opencv2/highgui/highgui.hpp> // for cv::VideoCapture
-#include <iostream> // for std::cerr
-#include <fstream>  // for std::ofstream
-#include <thread>
-#include <chrono>
-#include <atomic>
-//===================================================外部组件库===================================================
-
-
-//===================================================用户自定义文件===================================================
-#include "my_image_transmitter.hpp"
-#include "my_task_function.hpp"
-#include "IMU963R.hpp"
-#include "MadgwickAHRS.hpp"
+//===================================================用户自定义文件（极简版）===================================================
 #include "motor.hpp"
-#include "my_timestamp.hpp"
-#include "imgproc.hpp"
-#include "my_key.hpp"
-#include "my_menu.hpp"
 #include "my_pid.hpp"
-#include "navigation.hpp"
-#include "config_seting.hpp"
+#include "remote_control.hpp"
 //===================================================用户自定义文件===================================================
                                                                      
 
